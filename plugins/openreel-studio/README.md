@@ -51,19 +51,19 @@ node --test tests/openreel-mcp.test.mjs
 
 ## 能力边界
 
-插件只向 Codex 公开 7 个 MCP 工具，具体画布操作保存在服务端 capability 目录中，不会把二十多个参数 schema 一次性塞进模型上下文：
+插件采用“基础操作直接加载，复杂操作延迟发现”的分层。Codex 初始可直接使用：
 
-- `openreel_connection_info`：发现并验证安装版、源码版或远程 API。
-- `openreel_list_projects`：列出可操作项目。
-- `openreel_get_canvas`：一次读取完整节点、位置、媒体历史和依赖线。
-- `openreel_search_capabilities`：按意图搜索节点、依赖线、运行、上传、历史与恢复能力，只返回短摘要。
-- `openreel_describe_capability`：按需加载一个能力的精确 schema、使用边界、执行入口与 `schema_ref`。
-- `openreel_execute_capability`：校验 `schema_ref` 和参数后执行普通能力。
-- `openreel_execute_destructive_capability`：经明确确认后执行删除或快照恢复能力。
+- 连接与项目：连接，列出、创建、读取、更新和确认后删除项目。
+- 节点基础操作：读取画布/节点，创建、更新、移动和确认后删除节点。
+- 依赖线基础操作：创建、更新和确认后删除依赖线。
+- 常用执行：运行单个节点、向已有节点上传本地图片或视频。
+- 延迟发现入口：搜索、描述、执行普通能力、执行经确认的破坏性能力。
 
-标准链路是 `search → describe → execute`。搜索结果不携带 schema；描述结果才返回当前能力的精确 `input_schema`。执行必须携带描述阶段返回的 `schema_ref`，后端会再次做 JSON Schema 校验，参数错误时不会请求 OpenReel。创建、复制、更新、移动、连线、历史切换、运行、等待、上传、删除和快照恢复等细粒度能力都可被搜索发现，但不会出现在初始 `tools/list` 中。
+项目、节点和依赖线 CRUD 不需要先搜索。其中项目删除要求 `confirm_title` 与当前项目标题完全一致；节点和依赖线删除要求明确授权及 `confirm=true`。
 
-需要一次完成多项依赖编辑时，可以搜索“批量画布 patch”。其延迟 schema 使用带 `op` 的结构化数组，支持通过 `client_ref` 和 `client:<ref>` 引用同一次调用中新建的节点，并在第一项失败时停止。
+延迟目录只保留 8 项复杂或低频能力：动态节点合同、节点复制、媒体历史切换、混合画布 patch、批量运行、等待终态、恢复画布快照、批量删除/恢复。它们使用 `search → describe → execute`：搜索只返回短摘要，描述才返回精确 `input_schema` 和带 schema 哈希的 `schema_ref`，执行前服务端再次校验参数。
+
+其中批量画布 patch 支持通过 `client_ref` 和 `client:<ref>` 引用同一次调用中新建的节点，并在第一项失败时停止。
 
 创作流程、提示词方法和工作习惯由 Codex 自己的 skill 管理。插件不读取或暴露 OpenReel 内置 skill，只提供画布状态、动态节点合同和原子执行能力。
 

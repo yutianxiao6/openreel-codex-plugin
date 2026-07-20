@@ -5,7 +5,7 @@ description: Let Codex directly operate a running OpenReel Studio installation, 
 
 # OpenReel Direct Director
 
-This is an opt-in control mode. Installing the plugin does not replace OpenReel's default chat agent. Use it only when the user explicitly asks Codex to connect to or operate OpenReel; then Codex is the reasoning and orchestration agent for that requested work. The bridge exposes a small discovery surface; exact canvas operation schemas are loaded only when needed.
+This is an opt-in control mode. Installing the plugin does not replace OpenReel's default chat agent. Use it only when the user explicitly asks Codex to connect to or operate OpenReel; then Codex is the reasoning and orchestration agent for that requested work. Common project and canvas primitives load directly; complex or uncommon capabilities are discovered on demand.
 
 ## Connection
 
@@ -23,25 +23,25 @@ This is an opt-in control mode. Installing the plugin does not replace OpenReel'
 - Production methods and prompt-writing knowledge come from Codex skills. The bridge does not expose OpenReel's internal skills. Running `node.run` invokes the node's configured model/provider, not the OpenReel chat agent.
 - Keep Codex's own plan and reasoning in the Codex conversation. Persist user-visible creative truth as OpenReel `text`, `image`, `video`, or `audio` nodes.
 
-## Deferred capability sequence
+## Operating sequence
 
-1. Connect, then call `openreel_list_projects` and select the exact project id.
+1. Connect, then call `openreel_list_projects` and select the exact project id. Project create/get/update/delete tools are directly available; delete only with an exact title after explicit authorization.
 2. Read `openreel_get_canvas` before changing an existing canvas. It returns the persisted nodes, their fields and positions, media history, and edges in one graph snapshot.
 3. Use the applicable Codex skill for production method and prompt guidance. OpenReel contributes runtime state and model contracts, not an additional skill layer.
-4. Call `openreel_search_capabilities` with the concrete operation intent. Search results are summaries only and intentionally omit parameter schemas.
-5. Call `openreel_describe_capability` for the selected capability. Read its exact `input_schema`, `usage`, `destructive`, `executor`, and `schema_ref`.
-6. Call the returned executor with the same capability id and `schema_ref`. Put only fields accepted by `input_schema` in `arguments`; the server rejects stale schema refs and invalid fields before calling OpenReel.
+4. Use the directly loaded node tools for read/create/update/move/delete, the edge tools for connect/update/delete, `openreel_run_node` for a single run, and `openreel_upload_node_media` for local media.
+5. For an operation that has no direct tool, call `openreel_search_capabilities`. Search results are summaries only and intentionally omit parameter schemas.
+6. Call `openreel_describe_capability` for the selected uncommon capability, then call its returned executor with the exact `schema_ref` and schema-matching `arguments`.
 7. Read the changed node or canvas state and verify the persisted result. A provider accepting a job is not proof that media generation completed.
 
-Search again when the needed operation changes. Do not guess a capability id or reuse a schema from another capability.
+Search again when the uncommon operation changes. Do not route ordinary CRUD through the deferred executor, guess a capability id, or reuse another capability's schema.
 
 ## Canvas handling
 
 - Treat ids returned by OpenReel as authoritative. Visible ids such as `#3` are accepted by the bridge and resolved before raw canvas operations.
 - Preserve existing nodes and user-authored material. Read before update and patch only relevant fields.
-- Search for the ordered canvas patch capability when one change needs several dependent operations. Its deferred schema documents patch-local `client_ref` values.
+- Use direct node and edge tools for normal CRUD. Search for the ordered canvas patch capability only when one change needs several dependent operation types.
 - Arrange a readable flow and avoid moving unrelated nodes.
-- Use the discovered duplication capability for editable alternatives; it deliberately excludes generated output history.
+- Node duplication is deferred because it deliberately copies creative state while excluding generated output history.
 - Uploading media requires an existing matching image or video node; the upload becomes that node's completed output.
 
 ## Models and protocols
@@ -52,6 +52,8 @@ Search again when the needed operation changes. Do not guess a capability id or 
 
 ## Safety
 
-- Capabilities marked `destructive=true` require explicit user authorization and `openreel_execute_destructive_capability(confirm=true)`.
+- Project deletion requires the exact current title after explicit user authorization.
+- Direct node and edge deletion require explicit user authorization and their `confirm=true` fields.
+- Deferred snapshot recovery or combined destructive batches require explicit authorization and `openreel_execute_destructive_capability(confirm=true)`.
 - Read-only diagnosis does not authorize deletion, media generation, model spending, or broad canvas rewrites.
 - Never expose OpenReel credentials or masked secret values in the response.

@@ -52,7 +52,7 @@ async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   };
 }
 
-test("tool surface exposes only deferred discovery and execution primitives", async () => {
+test("tool surface loads common CRUD directly and defers uncommon capabilities", async () => {
   const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
   const bridge = startBridge(fake.baseUrl);
   try {
@@ -63,38 +63,52 @@ test("tool surface exposes only deferred discovery and execution primitives", as
     assert.deepEqual(new Set(names), new Set([
       "openreel_connection_info",
       "openreel_list_projects",
+      "openreel_create_project",
+      "openreel_get_project",
+      "openreel_update_project",
+      "openreel_delete_project",
       "openreel_get_canvas",
+      "openreel_get_nodes",
+      "openreel_create_nodes",
+      "openreel_update_nodes",
+      "openreel_move_nodes",
+      "openreel_delete_nodes",
+      "openreel_connect_nodes",
+      "openreel_update_edges",
+      "openreel_delete_edges",
+      "openreel_run_node",
+      "openreel_upload_node_media",
       "openreel_search_capabilities",
       "openreel_describe_capability",
       "openreel_execute_capability",
       "openreel_execute_destructive_capability",
     ]));
-    assert.equal(names.length, 7);
-    assert.ok(JSON.stringify(response.result.tools).length < 10_000, "public tool schema budget exceeded");
+    assert.equal(names.length, 21);
+    assert.ok(JSON.stringify(response.result.tools).length < 30_000, "public tool schema budget exceeded");
 
     const search = await bridge.call("tools/call", {
       name: "openreel_search_capabilities",
-      arguments: { query: "移动节点" },
+      arguments: { query: "切换历史图片" },
     });
-    const match = search.result.structuredContent.matches.find((item) => item.capability === "node.move");
-    assert.equal(match.capability, "node.move");
+    const match = search.result.structuredContent.matches.find((item) => item.capability === "node.history.switch");
+    assert.equal(match.capability, "node.history.switch");
     assert.equal(match.input_schema, undefined);
 
     const described = await bridge.call("tools/call", {
       name: "openreel_describe_capability",
-      arguments: { capability: "node.move" },
+      arguments: { capability: "node.duplicate" },
     });
     assert.equal(described.result.structuredContent.executor, "openreel_execute_capability");
     assert.equal(JSON.stringify(described.result.structuredContent.input_schema).includes("project_id"), false);
-    assert.match(described.result.structuredContent.schema_ref, /node\.move:[a-f0-9]{12}$/);
+    assert.match(described.result.structuredContent.schema_ref, /node\.duplicate:[a-f0-9]{12}$/);
 
     const staleSchema = await bridge.call("tools/call", {
       name: "openreel_execute_capability",
       arguments: {
         project_id: "project-1",
-        capability: "node.move",
+        capability: "node.duplicate",
         schema_ref: "stale",
-        arguments: { node_id: "#1", x: 10, y: 20 },
+        arguments: { node_ids: ["#1"] },
       },
     });
     assert.equal(staleSchema.result.isError, true);
@@ -104,9 +118,9 @@ test("tool surface exposes only deferred discovery and execution primitives", as
       name: "openreel_execute_capability",
       arguments: {
         project_id: "project-1",
-        capability: "node.move",
+        capability: "node.duplicate",
         schema_ref: described.result.structuredContent.schema_ref,
-        arguments: { node_id: "#1", x: "ten", y: 20 },
+        arguments: { node_ids: ["#1"], offset_x: "ten" },
       },
     });
     assert.equal(invalidArguments.result.isError, true);
@@ -114,7 +128,7 @@ test("tool surface exposes only deferred discovery and execution primitives", as
 
     const destructive = await bridge.call("tools/call", {
       name: "openreel_describe_capability",
-      arguments: { capability: "node.delete" },
+      arguments: { capability: "canvas.snapshot.restore" },
     });
     assert.equal(destructive.result.structuredContent.destructive, true);
     assert.equal(destructive.result.structuredContent.executor, "openreel_execute_destructive_capability");
@@ -123,34 +137,34 @@ test("tool surface exposes only deferred discovery and execution primitives", as
       name: "openreel_execute_capability",
       arguments: {
         project_id: "project-1",
-        capability: "node.delete",
+        capability: "canvas.snapshot.restore",
         schema_ref: destructive.result.structuredContent.schema_ref,
-        arguments: { node_ids: ["#1"] },
+        arguments: { nodes: [], edges: [] },
       },
     });
     assert.equal(wrongExecutor.result.isError, true);
     assert.equal(wrongExecutor.result.structuredContent.error_kind, "wrong_capability_executor");
 
-    const createDescription = await bridge.call("tools/call", {
+    const historyDescription = await bridge.call("tools/call", {
       name: "openreel_describe_capability",
-      arguments: { capability: "node.create" },
+      arguments: { capability: "node.history.switch" },
     });
-    assert.equal(Array.isArray(createDescription.result.structuredContent.input_schema.oneOf), true);
-    const missingNodeType = await bridge.call("tools/call", {
+    assert.equal(Array.isArray(historyDescription.result.structuredContent.input_schema.oneOf), true);
+    const missingHistoryChoice = await bridge.call("tools/call", {
       name: "openreel_execute_capability",
       arguments: {
         project_id: "project-1",
-        capability: "node.create",
-        schema_ref: createDescription.result.structuredContent.schema_ref,
-        arguments: { fields: { prompt: "missing type" } },
+        capability: "node.history.switch",
+        schema_ref: historyDescription.result.structuredContent.schema_ref,
+        arguments: { node_id: "#1" },
       },
     });
-    assert.equal(missingNodeType.result.isError, true);
-    assert.equal(missingNodeType.result.structuredContent.error_kind, "capability_arguments_invalid");
+    assert.equal(missingHistoryChoice.result.isError, true);
+    assert.equal(missingHistoryChoice.result.structuredContent.error_kind, "capability_arguments_invalid");
 
     const hiddenCall = await bridge.call("tools/call", {
-      name: "openreel_create_nodes",
-      arguments: { project_id: "project-1", type: "text", fields: { content: "hidden" } },
+      name: "openreel_apply_canvas_patch",
+      arguments: { project_id: "project-1", operations: [] },
     });
     assert.match(hiddenCall.error.message, /Unknown or private tool/);
   } finally {
@@ -159,17 +173,20 @@ test("tool surface exposes only deferred discovery and execution primitives", as
   }
 });
 
-test("common canvas intents discover their deferred capabilities without schemas", async () => {
+test("complex and uncommon canvas intents discover deferred capabilities without schemas", async () => {
   const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
     for (const [query, expected] of [
-      ["创建图片节点", "node.create"],
-      ["删除连线", "edge.delete"],
-      ["运行视频", "node.run"],
-      ["上传素材", "node.media.upload"],
+      ["读取动态模型参数", "node.contract.describe"],
+      ["复制节点", "node.duplicate"],
+      ["切换历史图片", "node.history.switch"],
+      ["批量混合修改画布", "canvas.patch"],
+      ["依次运行多个节点", "node.run_many"],
+      ["等待节点完成", "node.wait"],
       ["恢复画布快照", "canvas.snapshot.restore"],
+      ["批量删除和恢复", "canvas.destructive_batch"],
     ]) {
       const response = await bridge.call("tools/call", {
         name: "openreel_search_capabilities",
@@ -189,22 +206,11 @@ test("every registered canvas capability is searchable and describable on demand
   const bridge = startBridge(fake.baseUrl);
   const capabilities = [
     "node.contract.describe",
-    "node.list",
-    "node.get",
-    "node.create",
     "node.duplicate",
-    "node.update",
-    "node.move",
-    "edge.create",
-    "edge.update",
     "node.history.switch",
     "canvas.patch",
-    "node.run",
     "node.run_many",
     "node.wait",
-    "node.media.upload",
-    "node.delete",
-    "edge.delete",
     "canvas.snapshot.restore",
     "canvas.destructive_batch",
   ];
@@ -224,6 +230,61 @@ test("every registered canvas capability is searchable and describable on demand
       assert.equal(typeof described.result.structuredContent.input_schema, "object");
       assert.match(described.result.structuredContent.schema_ref, new RegExp(`${capability.replaceAll(".", "\\.")}:[a-f0-9]{12}$`));
     }
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("project CRUD including confirmed deletion is directly available", async () => {
+  const restCalls = [];
+  const fake = await startFakeOpenReel(
+    () => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }),
+    undefined,
+    ({ method, url, body }) => {
+      restCalls.push({ method, url, body });
+      if (method === "GET" && url === "/api/projects?compact=true") return [{ id: "project-1", title: "Project One" }];
+      if (method === "POST" && url === "/api/projects") return { id: "project-1", ...body };
+      if (method === "GET" && url === "/api/projects/project-1") return { id: "project-1", title: "Project One" };
+      if (method === "PATCH" && url === "/api/projects/project-1") return { id: "project-1", ...body };
+      if (method === "DELETE" && url === "/api/projects/project-1") return { ok: true, id: "project-1" };
+      return undefined;
+    },
+  );
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    const listed = await bridge.call("tools/call", {
+      name: "openreel_list_projects",
+      arguments: {},
+    });
+    assert.equal(listed.result.structuredContent.items[0].id, "project-1");
+    const created = await bridge.call("tools/call", {
+      name: "openreel_create_project",
+      arguments: { title: "Project One" },
+    });
+    assert.equal(created.result.structuredContent.title, "Project One");
+    const read = await bridge.call("tools/call", {
+      name: "openreel_get_project",
+      arguments: { project_id: "project-1" },
+    });
+    assert.equal(read.result.structuredContent.title, "Project One");
+    const updated = await bridge.call("tools/call", {
+      name: "openreel_update_project",
+      arguments: { project_id: "project-1", patch: { description: "Updated" } },
+    });
+    assert.equal(updated.result.structuredContent.description, "Updated");
+    const rejectedDelete = await bridge.call("tools/call", {
+      name: "openreel_delete_project",
+      arguments: { project_id: "project-1", confirm_title: "Wrong" },
+    });
+    assert.equal(rejectedDelete.result.isError, true);
+    const deleted = await bridge.call("tools/call", {
+      name: "openreel_delete_project",
+      arguments: { project_id: "project-1", confirm_title: "Project One" },
+    });
+    assert.equal(deleted.result.structuredContent.ok, true);
+    assert.equal(restCalls.filter((item) => item.method === "DELETE").length, 1);
   } finally {
     await bridge.close();
     await fake.close();
@@ -301,9 +362,13 @@ test("node creation uses normalized dynamic contract fields", async () => {
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await executeCapability(bridge, "node.create", {
-      type: "image",
-      fields: { prompt: "product photo" },
+    const response = await bridge.call("tools/call", {
+      name: "openreel_create_nodes",
+      arguments: {
+        project_id: "project-1",
+        type: "image",
+        fields: { prompt: "product photo" },
+      },
     });
 
     assert.equal(response.result.structuredContent.ok, true);
@@ -334,9 +399,13 @@ test("invalid contract blocks node.create before any write", async () => {
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await executeCapability(bridge, "node.create", {
-      type: "image",
-      fields: { prompt: "product photo" },
+    const response = await bridge.call("tools/call", {
+      name: "openreel_create_nodes",
+      arguments: {
+        project_id: "project-1",
+        type: "image",
+        fields: { prompt: "product photo" },
+      },
     });
 
     assert.equal(response.result.isError, true);
@@ -374,7 +443,10 @@ test("run preflight blocks provider execution and keeps the existing node", asyn
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await executeCapability(bridge, "node.run", { node_id: "#7" });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_run_node",
+      arguments: { project_id: "project-1", node_id: "#7" },
+    });
 
     assert.equal(response.result.isError, true);
     assert.equal(response.result.structuredContent.error_kind, "node_run_preflight_failed");
