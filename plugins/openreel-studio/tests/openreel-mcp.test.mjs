@@ -223,6 +223,12 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
     ]));
     assert.equal(names.length, 22);
     assert.ok(JSON.stringify(response.result.tools).length < 30_000, "public tool schema budget exceeded");
+    const createProject = response.result.tools.find((item) => item.name === "openreel_create_project");
+    assert.deepEqual(Object.keys(createProject.inputSchema.properties), ["title"]);
+    assert.deepEqual(createProject.inputSchema.required, ["title"]);
+    const updateProject = response.result.tools.find((item) => item.name === "openreel_update_project");
+    assert.deepEqual(Object.keys(updateProject.inputSchema.properties), ["project_id", "title"]);
+    assert.deepEqual(updateProject.inputSchema.required, ["title"]);
     for (const name of [
       "openreel_get_project",
       "openreel_update_project",
@@ -430,9 +436,13 @@ test("project CRUD including confirmed deletion is directly available", async ()
     assert.equal(read.result.structuredContent.title, "Project One");
     const updated = await bridge.call("tools/call", {
       name: "openreel_update_project",
-      arguments: { project_id: "project-1", patch: { description: "Updated" } },
+      arguments: { project_id: "project-1", title: "Renamed Session" },
     });
-    assert.equal(updated.result.structuredContent.description, "Updated");
+    assert.deepEqual(updated.result.structuredContent, { id: "project-1", title: "Renamed Session" });
+    assert.deepEqual(
+      restCalls.find((item) => item.method === "PATCH")?.body,
+      { title: "Renamed Session" },
+    );
     const rejectedDelete = await bridge.call("tools/call", {
       name: "openreel_delete_project",
       arguments: { project_id: "project-1", confirm_title: "Wrong" },

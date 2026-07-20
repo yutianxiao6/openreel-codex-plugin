@@ -1,6 +1,6 @@
 {
   "name": "openreel-studio",
-  "version": "0.1.0+codex.20260720083328",
+  "version": "0.1.0+codex.20260720090222",
   "description": "Optionally let Codex directly operate OpenReel Studio projects, canvas nodes, media, and runs without replacing OpenReel's default agent.",
   "author": {
     "name": "OpenReel Studio"

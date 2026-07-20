@@ -126,15 +126,7 @@ const TOOLS = [
     title: "Create OpenReel Project",
     description: "Create a project, select it for this Codex session, and return its project id.",
     inputSchema: objectSchema(
-      {
-        title: stringField("Project title."),
-        description: stringField("Optional project description."),
-        genre: stringField("Optional genre."),
-        format: stringField("Project format, for example 竖屏短剧 or 横屏视频."),
-        episode_count: { type: "integer", minimum: 1, description: "Episode count." },
-        duration_per_episode: { type: "integer", minimum: 1, description: "Target seconds per episode." },
-        budget_level: stringField("Budget level understood by OpenReel."),
-      },
+      { title: stringField("Session name.") },
       ["title"],
     ),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -154,14 +146,14 @@ const TOOLS = [
   },
   {
     name: "openreel_update_project",
-    title: "Update OpenReel Project",
-    description: "Update project metadata such as title, description, genre, duration, or status.",
+    title: "Rename OpenReel Session",
+    description: "Rename the selected OpenReel session.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
-        patch: objectField("Fields accepted by the OpenReel project update endpoint."),
+        title: stringField("New session name."),
       },
-      ["patch"],
+      ["title"],
     ),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -1710,18 +1702,10 @@ const HANDLERS = {
   },
 
   async openreel_create_project(args) {
-    const body = omitUndefined({
-      title: requireString(args.title, "title"),
-      description: args.description,
-      genre: args.genre,
-      format: args.format,
-      episode_count: args.episode_count,
-      duration_per_episode: args.duration_per_episode,
-      budget_level: args.budget_level,
-    });
+    const body = { title: requireString(args.title, "title") };
     const project = await requestOpenReel("/api/projects", { method: "POST", json: body });
     bindProject(project);
-    return { ...project, _codex_selected: true };
+    return { id: project.id, title: project.title, _codex_selected: true };
   },
 
   async openreel_get_project(args) {
@@ -1733,13 +1717,11 @@ const HANDLERS = {
 
   async openreel_update_project(args) {
     const projectId = encodeSegment(args.project_id, "project_id");
-    if (!args.patch || typeof args.patch !== "object" || Array.isArray(args.patch)) {
-      throw new Error("patch must be an object.");
-    }
-    const project = await requestOpenReel(`/api/projects/${projectId}`, { method: "PATCH", json: args.patch });
+    const title = requireString(args.title, "title");
+    const project = await requestOpenReel(`/api/projects/${projectId}`, { method: "PATCH", json: { title } });
     if (project?.id) bindProject(project);
-    else if (selectedProject && typeof args.patch.title === "string") selectedProject.title = args.patch.title;
-    return project;
+    else if (selectedProject) selectedProject.title = title;
+    return { id: project?.id ?? projectId, title: project?.title ?? title };
   },
 
   async openreel_delete_project(args) {
