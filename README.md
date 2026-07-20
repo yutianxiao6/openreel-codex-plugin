@@ -1,8 +1,8 @@
 # OpenReel Codex Plugin
 
-让 Codex 直接连接并操作正在运行的 [OpenReel Studio](https://github.com/yutianxiao6/openreel-studio)：项目、节点和依赖线 CRUD 直接可用，复杂或低频画布能力再通过 `search → describe → execute` 按需加载。
+让 Codex 直接连接并操作正在运行的 [OpenReel Studio](https://github.com/yutianxiao6/openreel-studio)：项目、节点和依赖线 CRUD 使用直接工具，复杂或低频画布能力通过 `search → describe → execute` 按需加载。
 
-这个仓库承载唯一的“Codex → OpenReel”连接方式。OpenReel 主程序不内嵌 Codex，也不会启动 Codex 后台进程；安装本插件后，用户仍需在 Codex 中明确要求连接和操作 OpenReel。
+这个仓库承载“Codex → OpenReel”外部控制连接。用户在 Codex 中明确提出连接或操作请求后，Codex 负责分析和编排，插件负责执行 OpenReel 原子操作；OpenReel 主程序和内置 Agent 保持独立运行。
 
 ## 安装
 
@@ -13,7 +13,7 @@ codex plugin marketplace add https://github.com/yutianxiao6/openreel-codex-plugi
 codex plugin add openreel-studio@openreel-codex
 ```
 
-安装或更新后，请新建一个 Codex 会话，让插件工具和 skill 完整加载。
+安装或更新后，新建一个 Codex 会话即可加载最新版工具和 Skill。
 
 ## 使用
 
@@ -21,7 +21,7 @@ codex plugin add openreel-studio@openreel-codex
 
 > 连接本机 OpenReel，列出项目，切换到“产品演示”，然后概览画布。
 
-桌面版和本地源码版会通过受验证的本机端口自动发现。Docker 或远程部署首次连接时设置地址及可选认证；验证成功后会保存到当前用户的私有配置文件，后续新会话无需重复输入。项目可以在同一 Codex 会话中显式切换，新建项目会自动成为当前操作目标。完整路径、安全边界和项目选择规则见 [插件文档](plugins/openreel-studio/README.md)。
+桌面版和本地源码版通过受验证的本机端口自动发现。Docker 或远程部署首次连接时设置地址及可选认证；验证成功后保存到当前用户的私有配置文件，后续新会话直接复用。项目可以在同一 Codex 会话中显式切换，新建项目会自动成为当前操作目标。完整调用流程、安全边界和项目选择规则见 [插件文档](plugins/openreel-studio/README.md)。
 
 ## 仓库结构
 

@@ -107,7 +107,7 @@ const TOOLS = [
     title: "List OpenReel Projects",
     description: "List OpenReel projects and mark the project selected for this Codex session.",
     inputSchema: objectSchema({
-      compact: booleanField("Omit the large project state payload.", true),
+      compact: booleanField("Return compact project identity and selection fields.", true),
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -219,12 +219,12 @@ const TOOLS = [
     name: "openreel_describe_node_contract",
     title: "Describe OpenReel Node Contract",
     description:
-      "Read the current project/provider contract and preflight candidate fields without creating a node. Returns normalized dynamic defaults, supported values, and field-level errors.",
+      "Read the current project/provider contract and preflight candidate fields as a read-only operation. Returns normalized dynamic defaults, supported values, and field-level errors.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
         type: { type: "string", enum: ["text", "image", "video", "audio"], description: "Node type." },
-        fields: nodeFieldsSchema("Candidate fields to validate. Image dimensions are never hardcoded when absent."),
+        fields: nodeFieldsSchema("Candidate fields to validate. OpenReel resolves image dimensions from the current dynamic contract."),
       },
       ["project_id", "type"],
     ),
@@ -350,7 +350,7 @@ const TOOLS = [
   {
     name: "openreel_update_edges",
     title: "Update OpenReel Canvas Edges",
-    description: "Update the label of one dependency edge or a batch of edges without recreating them.",
+    description: "Update one dependency-edge label or a batch of labels in place.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
@@ -364,7 +364,7 @@ const TOOLS = [
             additionalProperties: false,
             properties: {
               edge_id: stringField("Persisted edge id."),
-              label: stringField("New label; omit or pass an empty string to clear it."),
+              label: stringField("New label; an empty string clears it."),
             },
             required: ["edge_id"],
           },
@@ -424,7 +424,7 @@ const TOOLS = [
         project_id: stringField("OpenReel project UUID."),
         node_id: stringField("Node id or visible id."),
         history_id: stringField("History item id."),
-        index: { type: "integer", minimum: 0, description: "History index when history_id is not used." },
+        index: { type: "integer", minimum: 0, description: "History index used as the alternative to history_id." },
       },
       ["node_id"],
     ),
@@ -457,13 +457,13 @@ const TOOLS = [
     name: "openreel_run_node",
     title: "Run OpenReel Node",
     description:
-      "Preflight and run an existing node directly through OpenReel's node runner. This may call the configured media or language model provider, but never the OpenReel chat agent.",
+      "Preflight and run an existing node directly through OpenReel's node runner and its configured media or language model provider. The OpenReel chat agent remains a separate path.",
     inputSchema: objectSchema(
       {
         project_id: stringField("OpenReel project UUID."),
         node_id: stringField("Node id or visible id."),
         action: { type: "string", enum: ["run", "render", "force"], description: "Optional node.run action." },
-        extra_fields: objectField("Temporary run fields that are not automatically written to the node."),
+        extra_fields: objectField("Temporary fields applied to the current run."),
         hidden_extra_field_keys: stringArrayField("Temporary keys to remove from persisted output and response."),
         wait: booleanField("Poll the persisted node until it completes or fails.", true),
         wait_timeout_seconds: { type: "integer", minimum: 1, maximum: 1200, description: "Polling timeout." },
@@ -491,14 +491,14 @@ const TOOLS = [
     name: "openreel_publish_generated_image",
     title: "Publish Codex-Generated Image to OpenReel",
     description:
-      "Create a completed OpenReel image node from one local image produced by Codex's built-in image generator. Prefer this after image_gen unless the user explicitly requests an OpenReel-configured provider.",
+      "Create a completed OpenReel image node from one local image produced by Codex's built-in image generator. Use this after image_gen by default; a user-selected OpenReel provider uses the node contract, create, and run path.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
         file_path: stringField("Absolute local path returned by Codex image generation."),
         title: stringField("User-visible image node title."),
         prompt: stringField("The final prompt used to generate the image."),
-        position: positionSchema("Optional preferred canvas position; OpenReel avoids overlap."),
+        position: positionSchema("Optional preferred canvas position; OpenReel chooses an open position by default."),
       },
       ["file_path", "title"],
     ),
@@ -521,7 +521,7 @@ const TOOLS = [
   {
     name: "openreel_get_model_config",
     title: "Get Masked OpenReel Model Configuration",
-    description: "Read OpenReel's parsed model/provider configuration with secrets masked. Raw config text is never returned.",
+    description: "Read OpenReel's parsed model/provider configuration together with masked secret metadata.",
     inputSchema: objectSchema({}),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -588,13 +588,13 @@ const TOOLS = [
               objectSchema({
                 op: { const: "update_edge" },
                 edge_id: stringField("Persisted edge id."),
-                label: stringField("New label; omit or pass an empty string to clear it."),
+                label: stringField("New label; an empty string clears it."),
               }, ["op", "edge_id"]),
               objectSchema({
                 op: { const: "switch_node_history" },
                 node_id: stringField("Image, video, or audio node id."),
                 history_id: stringField("History item id."),
-                index: { type: "integer", minimum: 0, description: "History index when history_id is omitted." },
+                index: { type: "integer", minimum: 0, description: "History index used as the alternative to history_id." },
               }, ["op", "node_id"]),
             ],
           },
@@ -652,7 +652,7 @@ const TOOLS = [
             node_id: stringField("Node id or visible id."),
             action: { type: "string", enum: ["run", "render", "force"] },
             extra_fields: objectField("Temporary run fields."),
-            hidden_extra_field_keys: stringArrayField("Temporary keys excluded from persisted output."),
+            hidden_extra_field_keys: stringArrayField("Temporary keys kept private to the current run."),
             wait: booleanField("Wait for the persisted terminal state.", true),
             wait_timeout_seconds: { type: "integer", minimum: 1, maximum: 1200 },
           }, ["node_id"]),
@@ -666,7 +666,7 @@ const TOOLS = [
     name: "openreel_search_capabilities",
     title: "Search OpenReel Canvas Capabilities",
     description:
-      "Search the server-side canvas capability catalog by intent. Returns compact capability ids and summaries without loading their parameter schemas.",
+      "Search the server-side canvas capability catalog by intent. Returns compact capability ids and summaries; the describe stage loads one selected parameter schema.",
     inputSchema: objectSchema(
       {
         query: stringField("What Codex needs to do, for example create nodes, move layout, run media, or delete an edge."),
@@ -697,7 +697,7 @@ const TOOLS = [
         project_id: stringField("OpenReel project UUID."),
         capability: stringField("Exact non-destructive capability id."),
         schema_ref: stringField("Exact schema_ref returned by openreel_describe_capability."),
-        arguments: objectField("Arguments matching the deferred input_schema; do not repeat project_id."),
+        arguments: objectField("Arguments matching the deferred input_schema; project_id comes from the outer field."),
       },
       ["capability", "schema_ref", "arguments"],
     ),
@@ -713,7 +713,7 @@ const TOOLS = [
         project_id: stringField("OpenReel project UUID."),
         capability: stringField("Exact destructive capability id."),
         schema_ref: stringField("Exact schema_ref returned by openreel_describe_capability."),
-        arguments: objectField("Arguments matching the deferred input_schema; do not repeat project_id or confirm."),
+        arguments: objectField("Arguments matching the deferred input_schema; project_id and confirm come from the outer fields."),
         confirm: booleanField("Must be true after explicit user authorization."),
       },
       ["capability", "schema_ref", "arguments", "confirm"],
@@ -782,9 +782,9 @@ const CAPABILITY_CATALOG = [
     id: "node.duplicate",
     handler: "openreel_duplicate_nodes",
     title: "Duplicate canvas nodes",
-    summary: "Copy creative fields into new idle nodes while excluding generated output history and offsetting layout.",
+    summary: "Copy creative fields into new idle nodes with fresh output history and an offset layout.",
     keywords: "duplicate copy clone offset node 复制 克隆 副本 偏移 节点",
-    usage: "Use for editable alternatives; generated outputs and upload state are deliberately not copied.",
+    usage: "Use for editable alternatives; each duplicate starts with fresh generated-output and upload state.",
   },
   {
     id: "node.history.switch",
@@ -824,7 +824,7 @@ const CAPABILITY_CATALOG = [
     title: "Restore canvas snapshot",
     summary: "Restore known node and edge snapshots, updating existing matching ids.",
     keywords: "restore recover snapshot canvas nodes edges 恢复 还原 快照 画布 节点 连线",
-    usage: "Destructive recovery. Use only with a known snapshot after explicit user authorization.",
+    usage: "Destructive recovery. Execute with a known snapshot after explicit user authorization.",
     destructive: true,
   },
   {
@@ -833,7 +833,7 @@ const CAPABILITY_CATALOG = [
     title: "Delete or restore canvas items in one call",
     summary: "Delete nodes and edges and/or restore a known snapshot through one confirmed destructive operation.",
     keywords: "batch destructive delete restore canvas nodes edges 批量 破坏性 删除 恢复 画布 节点 连线",
-    usage: "Destructive. Use only when the user authorizes the complete combined change.",
+    usage: "Destructive. Execute after the user authorizes the complete combined change.",
     destructive: true,
   },
 ].map((item) => ({ destructive: false, ...item }));
@@ -1086,7 +1086,7 @@ function normalizeBaseUrl(raw) {
     throw new Error("OPENREEL_BASE_URL must use http:// or https://.");
   }
   if (parsed.username || parsed.password) {
-    throw new Error("Do not embed credentials in OPENREEL_BASE_URL; use OPENREEL_USERNAME and OPENREEL_PASSWORD.");
+    throw new Error("Set OPENREEL_BASE_URL to the service address and provide credentials through OPENREEL_USERNAME and OPENREEL_PASSWORD.");
   }
   parsed.search = "";
   parsed.hash = "";
@@ -1459,7 +1459,7 @@ function contractFailure(contract, index) {
     error: "OpenReel rejected the node fields before creation.",
     ...(index === undefined ? {} : { batch_index: index }),
     contract,
-    hint: "Repair the reported fields and retry creation. Do not bypass preflight or create a duplicate replacement node.",
+    hint: "Repair the reported fields, preflight the revised values, and retry creation on the intended node path.",
   };
 }
 
@@ -2308,7 +2308,7 @@ const HANDLERS = {
         node_id: nodeId,
         retry_tool: "openreel_upload_node_media",
         retry_arguments: { node_id: nodeId, file_path: local.filePath },
-        hint: "Retry the upload on this existing node. Do not regenerate the image or create another node.",
+        hint: "Retry the upload on this existing node with the same generated image file.",
       };
     }
   },
@@ -2373,7 +2373,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex is the OpenReel orchestrator. For image creation, prefer Codex's built-in image_gen and then openreel_publish_generated_image; use OpenReel node.create + node.run only when the user explicitly selects an OpenReel-configured provider. Use the directly loaded project, node, edge, single-run, and upload tools for common work. Only unlisted complex or uncommon operations use openreel_search_capabilities → openreel_describe_capability → the returned executor. Never call OpenReel /api/chat. Use references for dependencies and explicit authorization for destructive actions.",
+        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
     });
     return;
   }

@@ -1,7 +1,7 @@
 {
   "name": "openreel-studio",
-  "version": "0.1.0+codex.20260720092143",
-  "description": "Optionally let Codex directly operate OpenReel Studio projects, canvas nodes, media, and runs without replacing OpenReel's default agent.",
+  "version": "0.1.0+codex.20260720093556",
+  "description": "Add an opt-in Codex control path for OpenReel Studio projects, canvas nodes, media, and runs while its built-in agent remains available.",
   "author": {
     "name": "OpenReel Studio"
   },
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "OpenReel Studio",
     "shortDescription": "Optionally control the OpenReel canvas with Codex.",
-    "longDescription": "An opt-in connection for a running OpenReel desktop, source, Docker, or remote installation. Common project, node, edge, run, and upload operations are directly available; complex or uncommon canvas schemas are discovered only when needed. Installing the plugin does not replace or disable OpenReel's default chat agent.",
+    "longDescription": "An opt-in connection for a running OpenReel desktop, source, Docker, or remote installation. Common project, node, edge, run, and upload operations are directly available; complex or uncommon canvas schemas are discovered when needed. OpenReel's built-in chat agent remains available as an independent path.",
     "developerName": "OpenReel Studio",
     "category": "Productivity",
     "capabilities": [
