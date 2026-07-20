@@ -13,8 +13,9 @@ This is an opt-in control mode. Installing the plugin does not replace OpenReel'
 2. Do not connect, inspect projects, or change the OpenReel chat mode merely because the plugin is installed. Activation is a user choice.
 3. Installed desktop builds start a verified loopback API on a dynamic port. The bridge discovers it automatically; the user only needs to start OpenReel.
 4. Source builds are discovered on their normal local ports.
-5. Docker and remote deployments use the explicit `OPENREEL_BASE_URL`; Basic or bearer authentication comes from the documented environment variables.
-6. If discovery fails, tell the user to start the installed app. Ask for remote configuration only when the intended target is not local.
+5. Docker and remote deployments use the saved user connection configuration. On the first verified connection, documented environment variables provide the address and optional Basic or bearer authentication; the bridge saves them privately for later sessions.
+6. A complete explicit connection profile replaces the saved profile only after verification, so credentials from one server are never inherited by a newly specified server.
+7. If discovery fails, tell the user to start the installed app. Ask for first-time remote configuration only when the intended target is not local and no saved configuration is available.
 
 ## Direct-control boundary
 
@@ -57,3 +58,4 @@ Search again when the uncommon operation changes. Do not route ordinary CRUD thr
 - Deferred snapshot recovery or combined destructive batches require explicit authorization and `openreel_execute_destructive_capability(confirm=true)`.
 - Read-only diagnosis does not authorize deletion, media generation, model spending, or broad canvas rewrites.
 - Never expose OpenReel credentials or masked secret values in the response.
+- Never read or reproduce the saved connection file. Use `openreel_connection_info` for its safe source, saved-state, and authentication metadata.

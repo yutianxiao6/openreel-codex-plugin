@@ -13,7 +13,9 @@
         "OPENREEL_PASSWORD",
         "OPENREEL_TOKEN",
         "OPENREEL_DISCOVERY_PORTS",
-        "OPENREEL_REQUEST_TIMEOUT_MS"
+        "OPENREEL_REQUEST_TIMEOUT_MS",
+        "OPENREEL_CONFIG_PATH",
+        "OPENREEL_REMEMBER_CONNECTION"
       ],
       "tool_timeout_sec": 1200
     }

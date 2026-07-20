@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { openAsBlob } from "node:fs";
-import { stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -11,6 +12,13 @@ const SERVER_VERSION = "0.1.0";
 const DEFAULT_PORT_SPEC = "7860-7920,8000-8020";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20 * 60 * 1000;
 const DISCOVERY_TIMEOUT_MS = 1400;
+const CONNECTION_CONFIG_VERSION = 1;
+const CONNECTION_ENV_NAMES = [
+  "OPENREEL_BASE_URL",
+  "OPENREEL_USERNAME",
+  "OPENREEL_PASSWORD",
+  "OPENREEL_TOKEN",
+];
 const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "cancelled", "canceled"]);
 
 const JsonRpcError = {
@@ -20,6 +28,9 @@ const JsonRpcError = {
 };
 
 let cachedConnection = null;
+let storedConnectionConfig = null;
+let storedConnectionConfigLoaded = false;
+let storedConnectionConfigError = null;
 
 function objectSchema(properties, required = []) {
   return {
@@ -83,7 +94,7 @@ const TOOLS = [
     name: "openreel_connection_info",
     title: "Connect to OpenReel Studio",
     description:
-      "Find and verify a running OpenReel Studio API. Installed desktop builds are discovered on their dynamic localhost port; remote deployments require OPENREEL_BASE_URL.",
+      "Find and verify a running OpenReel Studio API. A verified explicit connection is saved for later sessions; installed desktop builds are discovered on localhost.",
     inputSchema: objectSchema({
       refresh: booleanField("Clear the cached endpoint and discover OpenReel again.", false),
     }),
@@ -1011,6 +1022,13 @@ function requireString(value, name) {
   return value.trim();
 }
 
+function requireSecret(value, name) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string.`);
+  }
+  return value;
+}
+
 function boundedNumber(value, fallback, min, max) {
   const number = Number(value ?? fallback);
   if (!Number.isFinite(number)) return fallback;
@@ -1034,11 +1052,135 @@ function normalizeBaseUrl(raw) {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function authHeaders() {
-  const token = String(process.env.OPENREEL_TOKEN ?? "").trim();
+function connectionConfigPath() {
+  const explicit = String(process.env.OPENREEL_CONFIG_PATH ?? "").trim();
+  if (explicit) return path.resolve(explicit);
+  if (process.platform === "win32") {
+    const appData = String(process.env.APPDATA ?? "").trim() || path.join(homedir(), "AppData", "Roaming");
+    return path.join(appData, "OpenReel", "codex-connection.json");
+  }
+  if (process.platform === "darwin") {
+    return path.join(homedir(), "Library", "Application Support", "OpenReel", "codex-connection.json");
+  }
+  const configHome = String(process.env.XDG_CONFIG_HOME ?? "").trim() || path.join(homedir(), ".config");
+  return path.join(configHome, "openreel-codex-plugin", "connection.json");
+}
+
+function hasConnectionEnvironment() {
+  return CONNECTION_ENV_NAMES.some((name) => Object.prototype.hasOwnProperty.call(process.env, name));
+}
+
+function environmentConnectionProfile() {
+  return {
+    baseUrl: String(process.env.OPENREEL_BASE_URL ?? "").trim(),
+    username: String(process.env.OPENREEL_USERNAME ?? "").trim(),
+    password: String(process.env.OPENREEL_PASSWORD ?? ""),
+    token: String(process.env.OPENREEL_TOKEN ?? "").trim(),
+    settingsSource: "environment",
+  };
+}
+
+function parseStoredConnectionConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("configuration must be an object");
+  if (value.version !== CONNECTION_CONFIG_VERSION) throw new Error(`unsupported version: ${value.version}`);
+  const baseUrl = normalizeBaseUrl(value.base_url);
+  const authentication = value.authentication;
+  if (!authentication || typeof authentication !== "object" || Array.isArray(authentication)) {
+    throw new Error("authentication must be an object");
+  }
+  const type = String(authentication.type ?? "");
+  if (!new Set(["none", "basic", "bearer"]).has(type)) throw new Error(`unsupported authentication type: ${type}`);
+  const profile = {
+    baseUrl,
+    username: type === "basic" ? requireString(authentication.username, "saved username") : "",
+    password: type === "basic" ? requireSecret(authentication.password, "saved password") : "",
+    token: type === "bearer" ? requireString(authentication.token, "saved token") : "",
+    settingsSource: "saved-config",
+  };
+  authHeaders(profile);
+  return profile;
+}
+
+async function loadStoredConnectionConfig() {
+  if (storedConnectionConfigLoaded) return storedConnectionConfig;
+  storedConnectionConfigLoaded = true;
+  try {
+    const parsed = JSON.parse(await readFile(connectionConfigPath(), "utf8"));
+    storedConnectionConfig = parseStoredConnectionConfig(parsed);
+  } catch (error) {
+    if (error?.code !== "ENOENT") storedConnectionConfigError = error instanceof Error ? error.message : String(error);
+  }
+  return storedConnectionConfig;
+}
+
+function rememberConnectionEnabled() {
+  return !new Set(["0", "false", "no", "off"]).has(String(process.env.OPENREEL_REMEMBER_CONNECTION ?? "1").trim().toLowerCase());
+}
+
+function storedAuthentication(profile) {
+  const mode = authMode(profile);
+  if (mode === "bearer") return { type: "bearer", token: profile.token };
+  if (mode === "basic") return { type: "basic", username: profile.username, password: profile.password };
+  return { type: "none" };
+}
+
+async function saveConnectionConfig(profile, baseUrl) {
+  const configPath = connectionConfigPath();
+  const directory = path.dirname(configPath);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const payload = {
+    version: CONNECTION_CONFIG_VERSION,
+    base_url: baseUrl,
+    authentication: storedAuthentication(profile),
+    updated_at: new Date().toISOString(),
+  };
+  const temporaryPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await chmod(temporaryPath, 0o600);
+    await rename(temporaryPath, configPath);
+    await chmod(configPath, 0o600);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {});
+    throw error;
+  }
+  storedConnectionConfig = { ...profile, baseUrl, settingsSource: "saved-config" };
+  storedConnectionConfigLoaded = true;
+  storedConnectionConfigError = null;
+  return configPath;
+}
+
+async function forgetConnectionConfig() {
+  const configPath = connectionConfigPath();
+  let removed = true;
+  try {
+    await unlink(configPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") removed = false;
+    else throw error;
+  }
+  cachedConnection = null;
+  storedConnectionConfig = null;
+  storedConnectionConfigLoaded = true;
+  storedConnectionConfigError = null;
+  return { ok: true, removed, config_path: configPath };
+}
+
+async function resolveConnectionProfile() {
+  if (hasConnectionEnvironment()) return environmentConnectionProfile();
+  const saved = await loadStoredConnectionConfig();
+  if (saved) return saved;
+  if (storedConnectionConfigError) {
+    throw new Error(`Saved OpenReel connection configuration is invalid: ${storedConnectionConfigError}`);
+  }
+  return { baseUrl: "", username: "", password: "", token: "", settingsSource: "localhost-discovery" };
+}
+
+function authHeaders(profile) {
+  const token = String(profile?.token ?? "").trim();
   if (token) return { Authorization: `Bearer ${token}` };
-  const username = String(process.env.OPENREEL_USERNAME ?? "").trim();
-  const password = String(process.env.OPENREEL_PASSWORD ?? "");
+  const username = String(profile?.username ?? "").trim();
+  const password = String(profile?.password ?? "");
   if (username || password) {
     if (!username || !password) {
       throw new Error("OPENREEL_USERNAME and OPENREEL_PASSWORD must be provided together.");
@@ -1048,9 +1190,9 @@ function authHeaders() {
   return {};
 }
 
-function authMode() {
-  if (String(process.env.OPENREEL_TOKEN ?? "").trim()) return "bearer";
-  if (String(process.env.OPENREEL_USERNAME ?? "").trim()) return "basic";
+function authMode(profile) {
+  if (String(profile?.token ?? "").trim()) return "bearer";
+  if (String(profile?.username ?? "").trim()) return "basic";
   return "none";
 }
 
@@ -1098,10 +1240,10 @@ function errorPreview(value) {
   return String(text ?? "").replace(/\s+/g, " ").slice(0, 1200);
 }
 
-async function probeOpenReel(baseUrl) {
+async function probeOpenReel(baseUrl, profile) {
   try {
     const response = await fetch(apiUrl(baseUrl, "/api/health"), {
-      headers: { Accept: "application/json", ...authHeaders() },
+      headers: { Accept: "application/json", ...authHeaders(profile) },
       signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
     });
     if (!response.ok) return null;
@@ -1117,17 +1259,37 @@ async function discoverConnection({ refresh = false } = {}) {
   if (refresh) cachedConnection = null;
   if (cachedConnection) return cachedConnection;
 
-  const explicit = String(process.env.OPENREEL_BASE_URL ?? "").trim();
+  const profile = await resolveConnectionProfile();
+  authHeaders(profile);
+  const explicit = profile.baseUrl;
   if (explicit) {
     const baseUrl = normalizeBaseUrl(explicit);
-    const health = await probeOpenReel(baseUrl);
+    const health = await probeOpenReel(baseUrl, profile);
     if (!health) {
       throw new Error(
         `OPENREEL_BASE_URL did not return a verified OpenReel health response: ${baseUrl}. ` +
           "Check that OpenReel is running and that OPENREEL_USERNAME/OPENREEL_PASSWORD or OPENREEL_TOKEN is correct.",
       );
     }
-    cachedConnection = { baseUrl, health, source: "explicit" };
+    let credentialsSaved = profile.settingsSource === "saved-config";
+    let configurationWarning = null;
+    if (profile.settingsSource === "environment" && rememberConnectionEnabled()) {
+      try {
+        await saveConnectionConfig(profile, baseUrl);
+        credentialsSaved = true;
+      } catch (error) {
+        configurationWarning = `Connected, but could not save the private connection configuration: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    cachedConnection = {
+      baseUrl,
+      health,
+      source: profile.settingsSource === "saved-config" ? "saved-config" : "explicit",
+      settingsSource: profile.settingsSource,
+      profile,
+      credentialsSaved,
+      configurationWarning,
+    };
     return cachedConnection;
   }
 
@@ -1135,10 +1297,17 @@ async function discoverConnection({ refresh = false } = {}) {
   const candidates = ports.map((port) => `http://127.0.0.1:${port}`);
   for (let offset = 0; offset < candidates.length; offset += 24) {
     const batch = candidates.slice(offset, offset + 24);
-    const results = await Promise.all(batch.map(async (baseUrl) => ({ baseUrl, health: await probeOpenReel(baseUrl) })));
+    const results = await Promise.all(batch.map(async (baseUrl) => ({ baseUrl, health: await probeOpenReel(baseUrl, profile) })));
     const match = results.find((item) => item.health);
     if (match) {
-      cachedConnection = { ...match, source: "localhost-discovery" };
+      cachedConnection = {
+        ...match,
+        source: "localhost-discovery",
+        settingsSource: "localhost-discovery",
+        profile,
+        credentialsSaved: false,
+        configurationWarning: null,
+      };
       return cachedConnection;
     }
   }
@@ -1158,7 +1327,7 @@ async function requestOpenReel(apiPath, options = {}) {
     1000,
     30 * 60 * 1000,
   );
-  const headers = { Accept: "application/json", ...authHeaders(), ...(options.headers ?? {}) };
+  const headers = { Accept: "application/json", ...authHeaders(connection.profile), ...(options.headers ?? {}) };
   let body = options.body;
   if (options.json !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -1364,6 +1533,26 @@ function safeProject(project, includeState) {
   return result;
 }
 
+function publicConnectionInfo(connection) {
+  const parsed = new URL(connection.baseUrl);
+  return {
+    ok: true,
+    api_base: connection.baseUrl,
+    source: connection.source,
+    settings_source: connection.settingsSource,
+    installation_mode: ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)
+      ? "local-installed-or-source"
+      : "remote-or-docker",
+    authentication: authMode(connection.profile),
+    connection_saved: connection.credentialsSaved,
+    config_path: connectionConfigPath(),
+    ...(connection.configurationWarning ? { configuration_warning: connection.configurationWarning } : {}),
+    health: connection.health,
+    direct_control: true,
+    openreel_chat_agent_used: false,
+  };
+}
+
 function mimeTypeFor(filePath) {
   const extension = path.extname(filePath).toLowerCase();
   return (
@@ -1398,19 +1587,7 @@ function resolvePatchRefs(value, refs) {
 const HANDLERS = {
   async openreel_connection_info(args) {
     const connection = await discoverConnection({ refresh: args.refresh === true });
-    const parsed = new URL(connection.baseUrl);
-    return {
-      ok: true,
-      api_base: connection.baseUrl,
-      source: connection.source,
-      installation_mode: ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)
-        ? "local-installed-or-source"
-        : "remote-or-docker",
-      authentication: authMode(),
-      health: connection.health,
-      direct_control: true,
-      openreel_chat_agent_used: false,
-    };
+    return publicConnectionInfo(connection);
   },
 
   async openreel_list_projects(args) {
@@ -2020,10 +2197,17 @@ async function handleRequest(message) {
   if (id !== undefined) sendError(id, JsonRpcError.METHOD_NOT_FOUND, `Method not found: ${method}`);
 }
 
-if (process.argv.includes("--check")) {
+if (process.argv.includes("--forget-connection")) {
+  try {
+    process.stdout.write(`${JSON.stringify(await forgetConnectionConfig(), null, 2)}\n`);
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+} else if (process.argv.includes("--check")) {
   try {
     const connection = await discoverConnection({ refresh: true });
-    process.stdout.write(`${JSON.stringify({ ok: true, ...connection }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(publicConnectionInfo(connection), null, 2)}\n`);
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

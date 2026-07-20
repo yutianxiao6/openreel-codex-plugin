@@ -21,7 +21,7 @@ codex plugin add openreel-studio@openreel-codex
 
 > 连接本机 OpenReel，列出项目并概览当前画布。
 
-桌面版和本地源码版会通过受验证的本机端口自动发现。Docker 或远程部署需设置 `OPENREEL_BASE_URL`；没有认证时不需要密码，Basic Auth 或 bearer token 按服务配置选用。插件只转发当前进程已有的可选连接变量，不保存凭据。完整说明见 [插件文档](plugins/openreel-studio/README.md)。
+桌面版和本地源码版会通过受验证的本机端口自动发现。Docker 或远程部署首次连接时设置地址及可选认证；验证成功后会保存到当前用户的私有配置文件，后续新会话无需重复输入。完整路径、安全边界和清除方式见 [插件文档](plugins/openreel-studio/README.md)。
 
 ## 仓库结构
 

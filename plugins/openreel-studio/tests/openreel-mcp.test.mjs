@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,6 +19,8 @@ const FORWARDED_ENV_VARS = [
   "OPENREEL_TOKEN",
   "OPENREEL_DISCOVERY_PORTS",
   "OPENREEL_REQUEST_TIMEOUT_MS",
+  "OPENREEL_CONFIG_PATH",
+  "OPENREEL_REMEMBER_CONNECTION",
 ];
 
 async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
@@ -65,7 +69,7 @@ async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   };
 }
 
-test("plugin manifest forwards optional OpenReel connection settings without storing secrets", async () => {
+test("plugin manifest forwards optional OpenReel settings without embedding secret values", async () => {
   const manifest = JSON.parse(await readFile(MCP_MANIFEST_PATH, "utf8"));
   const server = manifest.mcpServers?.["openreel-studio"];
 
@@ -102,6 +106,86 @@ test("bridge supports unauthenticated, Basic, and Bearer connections", async (t)
         await fake.close();
       }
     });
+  }
+});
+
+test("a verified connection is saved privately and reused without environment credentials", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "openreel-connection-test-"));
+  const configPath = path.join(directory, "connection.json");
+  const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
+  try {
+    const firstBridge = startBridge(fake.baseUrl, {
+      OPENREEL_USERNAME: "remembered-user",
+      OPENREEL_PASSWORD: "remembered-password",
+      OPENREEL_CONFIG_PATH: configPath,
+      OPENREEL_REMEMBER_CONNECTION: "1",
+    });
+    try {
+      await firstBridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+      const first = await firstBridge.call("tools/call", {
+        name: "openreel_connection_info",
+        arguments: { refresh: true },
+      });
+      assert.equal(first.result.structuredContent.settings_source, "environment");
+      assert.equal(first.result.structuredContent.connection_saved, true);
+      assert.equal(first.result.structuredContent.authentication, "basic");
+      assert.equal(JSON.stringify(first.result).includes("remembered-password"), false);
+    } finally {
+      await firstBridge.close();
+    }
+
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(saved.base_url, fake.baseUrl);
+    assert.deepEqual(saved.authentication, {
+      type: "basic",
+      username: "remembered-user",
+      password: "remembered-password",
+    });
+    if (process.platform !== "win32") assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+
+    fake.requests.length = 0;
+    const secondBridge = startBridge(undefined, {
+      OPENREEL_CONFIG_PATH: configPath,
+      OPENREEL_REMEMBER_CONNECTION: "0",
+    });
+    try {
+      await secondBridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+      const second = await secondBridge.call("tools/call", {
+        name: "openreel_connection_info",
+        arguments: { refresh: true },
+      });
+      assert.equal(second.result.structuredContent.source, "saved-config");
+      assert.equal(second.result.structuredContent.settings_source, "saved-config");
+      assert.equal(second.result.structuredContent.connection_saved, true);
+      assert.equal(second.result.structuredContent.authentication, "basic");
+      assert.equal(
+        fake.requests.find((request) => request.url === "/api/health")?.headers.authorization,
+        `Basic ${Buffer.from("remembered-user:remembered-password").toString("base64")}`,
+      );
+    } finally {
+      await secondBridge.close();
+    }
+
+    fake.requests.length = 0;
+    const replacementBridge = startBridge(fake.baseUrl, {
+      OPENREEL_CONFIG_PATH: configPath,
+      OPENREEL_REMEMBER_CONNECTION: "1",
+    });
+    try {
+      await replacementBridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+      const replacement = await replacementBridge.call("tools/call", {
+        name: "openreel_connection_info",
+        arguments: { refresh: true },
+      });
+      assert.equal(replacement.result.structuredContent.authentication, "none");
+      assert.equal(fake.requests.find((request) => request.url === "/api/health")?.headers.authorization, undefined);
+      assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).authentication, { type: "none" });
+    } finally {
+      await replacementBridge.close();
+    }
+  } finally {
+    await fake.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -347,7 +431,8 @@ test("project CRUD including confirmed deletion is directly available", async ()
 function startBridge(baseUrl, extraEnv = {}) {
   const env = { ...process.env };
   for (const name of FORWARDED_ENV_VARS) delete env[name];
-  Object.assign(env, { OPENREEL_BASE_URL: baseUrl }, extraEnv);
+  Object.assign(env, { OPENREEL_REMEMBER_CONNECTION: "0" }, extraEnv);
+  if (baseUrl !== undefined) env.OPENREEL_BASE_URL = baseUrl;
   const child = spawn(process.execPath, [BRIDGE_PATH, "--stdio"], {
     env,
     stdio: ["pipe", "pipe", "pipe"],
