@@ -11,7 +11,7 @@ const SERVER_NAME = "OpenReel Studio Direct Bridge";
 const SERVER_VERSION = "0.1.0";
 const DEFAULT_PORT_SPEC = "7860-7920,8000-8020";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20 * 60 * 1000;
-const DISCOVERY_TIMEOUT_MS = 1400;
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 15 * 1000;
 const CONNECTION_CONFIG_VERSION = 1;
 const CONNECTION_ENV_NAMES = [
   "OPENREEL_BASE_URL",
@@ -1287,7 +1287,12 @@ async function probeOpenReel(baseUrl, profile) {
   try {
     const response = await fetch(apiUrl(baseUrl, "/api/health"), {
       headers: { Accept: "application/json", ...authHeaders(profile) },
-      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(boundedNumber(
+        process.env.OPENREEL_DISCOVERY_TIMEOUT_MS,
+        DEFAULT_DISCOVERY_TIMEOUT_MS,
+        1000,
+        60 * 1000,
+      )),
     });
     if (!response.ok) return null;
     const health = await parseResponse(response);

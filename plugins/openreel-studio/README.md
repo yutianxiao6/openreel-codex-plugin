@@ -39,6 +39,7 @@ Linux 和 macOS 使用 `0600` 文件权限，Windows 使用当前用户配置目
 远程无认证服务只需设置 `OPENREEL_BASE_URL`。以下环境变量提供高级控制：
 
 - `OPENREEL_DISCOVERY_PORTS`：本机探测范围，默认 `7860-7920,8000-8020`。
+- `OPENREEL_DISCOVERY_TIMEOUT_MS`：单个连接探针超时，默认 15 秒，可配置范围为 1–60 秒。
 - `OPENREEL_REQUEST_TIMEOUT_MS`：单次请求超时，默认 20 分钟。
 - `OPENREEL_REMEMBER_CONNECTION=0`：本次会话使用显式配置，并跳过持久化。
 - `OPENREEL_CONFIG_PATH`：指定受管环境使用的连接配置路径。
