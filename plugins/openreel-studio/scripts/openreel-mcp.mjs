@@ -66,6 +66,16 @@ const nodeFieldsSchema = (description) => ({
     reference_audios: { type: "array", description: "Audio references." },
   },
 });
+const positionSchema = (description) => ({
+  type: "object",
+  description,
+  additionalProperties: false,
+  properties: {
+    x: numberField("Canvas x coordinate."),
+    y: numberField("Canvas y coordinate."),
+  },
+  required: ["x", "y"],
+});
 
 const TOOLS = [
   {
@@ -219,6 +229,7 @@ const TOOLS = [
         name: stringField("Optional single-node title alias."),
         prompt: stringField("Optional single-node prompt alias."),
         parent_node_id: stringField("Optional parent node id."),
+        position: positionSchema("Optional persisted position for the created node."),
         nodes: {
           type: "array",
           description: "Batch node definitions accepted by OpenReel node.create.",
@@ -230,6 +241,7 @@ const TOOLS = [
               type: { type: "string", enum: ["text", "image", "video", "audio"] },
               fields: nodeFieldsSchema("Candidate fields preflighted before batch creation."),
               parent_node_id: stringField("Optional parent node id or client:<ref>."),
+              position: positionSchema("Optional persisted position for this node."),
             },
             required: ["type"],
           },
@@ -237,6 +249,22 @@ const TOOLS = [
         },
       },
       ["project_id"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "openreel_duplicate_nodes",
+    title: "Duplicate OpenReel Canvas Nodes",
+    description: "Duplicate one or several nodes as new idle nodes, preserving creative fields but not generated output history.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        node_ids: stringArrayField("Node ids or visible ids to duplicate."),
+        title_suffix: stringField("Suffix appended to each duplicated node title."),
+        offset_x: numberField("Horizontal offset from each source node."),
+        offset_y: numberField("Vertical offset from each source node."),
+      },
+      ["project_id", "node_ids"],
     ),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -262,17 +290,30 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
-    name: "openreel_move_node",
-    title: "Move OpenReel Canvas Node",
-    description: "Set a node's canvas coordinates. Visible ids such as #3 are resolved to the persisted node id.",
+    name: "openreel_move_nodes",
+    title: "Move OpenReel Canvas Nodes",
+    description: "Set persisted canvas coordinates for one node or a batch. Visible ids such as #3 are resolved first.",
     inputSchema: objectSchema(
       {
         project_id: stringField("OpenReel project UUID."),
-        node_id: stringField("Node id or visible id."),
-        x: numberField("Canvas x coordinate."),
-        y: numberField("Canvas y coordinate."),
+        node_id: stringField("Single node id or visible id."),
+        x: numberField("Single-node canvas x coordinate."),
+        y: numberField("Single-node canvas y coordinate."),
+        moves: {
+          type: "array",
+          description: "Batch entries shaped as {node_id, x, y}.",
+          items: objectSchema(
+            {
+              node_id: stringField("Node id or visible id."),
+              x: numberField("Canvas x coordinate."),
+              y: numberField("Canvas y coordinate."),
+            },
+            ["node_id", "x", "y"],
+          ),
+          minItems: 1,
+        },
       },
-      ["project_id", "node_id", "x", "y"],
+      ["project_id"],
     ),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -293,6 +334,60 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
+    name: "openreel_update_edges",
+    title: "Update OpenReel Canvas Edges",
+    description: "Update the label of one dependency edge or a batch of edges without recreating them.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        edge_id: stringField("Single persisted edge id."),
+        label: stringField("New edge label; an empty value clears it."),
+        updates: {
+          type: "array",
+          description: "Batch entries shaped as {edge_id, label}.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              edge_id: stringField("Persisted edge id."),
+              label: stringField("New label; omit or pass an empty string to clear it."),
+            },
+            required: ["edge_id"],
+          },
+          minItems: 1,
+        },
+      },
+      ["project_id"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "openreel_delete_edges",
+    title: "Delete OpenReel Canvas Edges",
+    description: "Delete dependency edges by id or source/target pair after explicit user authorization.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        edge_ids: stringArrayField("Persisted edge ids to delete."),
+        edges: {
+          type: "array",
+          description: "Edges addressed by {source_node_id, target_node_id}.",
+          items: objectSchema(
+            {
+              source_node_id: stringField("Source node id or visible id."),
+              target_node_id: stringField("Target node id or visible id."),
+            },
+            ["source_node_id", "target_node_id"],
+          ),
+          minItems: 1,
+        },
+        confirm: booleanField("Must be true after the user explicitly authorizes deletion."),
+      },
+      ["project_id", "confirm"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  },
+  {
     name: "openreel_delete_nodes",
     title: "Delete OpenReel Canvas Nodes",
     description: "Permanently delete selected nodes and their incident edges. Requires confirm=true after explicit user authorization.",
@@ -305,6 +400,44 @@ const TOOLS = [
       ["project_id", "node_ids", "confirm"],
     ),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "openreel_switch_node_history",
+    title: "Switch OpenReel Node Media History",
+    description: "Switch an image, video, or audio node to a persisted media-history version.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        node_id: stringField("Node id or visible id."),
+        history_id: stringField("History item id."),
+        index: { type: "integer", minimum: 0, description: "History index when history_id is not used." },
+      },
+      ["project_id", "node_id"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "openreel_restore_canvas_snapshot",
+    title: "Restore OpenReel Canvas Snapshot",
+    description: "Restore persisted node and edge snapshots after explicit user authorization; existing matching ids are updated.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        nodes: {
+          type: "array",
+          description: "Canvas node snapshots accepted by OpenReel.",
+          items: { type: "object", additionalProperties: true },
+        },
+        edges: {
+          type: "array",
+          description: "Canvas edge snapshots accepted by OpenReel.",
+          items: { type: "object", additionalProperties: true },
+        },
+        confirm: booleanField("Must be true after the user explicitly authorizes snapshot restoration."),
+      },
+      ["project_id", "nodes", "edges", "confirm"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "openreel_run_node",
@@ -374,39 +507,142 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
-    name: "openreel_search_skills",
-    title: "Search OpenReel Production Skills",
+    name: "openreel_apply_canvas_patch",
+    title: "Apply OpenReel Canvas Patch",
     description:
-      "Search OpenReel's workflow, prompt, or review skills so Codex can follow the product's current production guidance before authoring nodes.",
+      "Apply an ordered, typed set of non-destructive canvas mutations. Supported operations create, duplicate, update, or move nodes; connect nodes; update edge labels; and switch node media history.",
     inputSchema: objectSchema(
       {
-        query: stringField("Search text."),
-        queries: stringArrayField("Optional batch of search texts."),
-        category: { type: "string", enum: ["workflow", "prompt", "review"], description: "Required skill category." },
-        scope: { type: "string", enum: ["user", "builtin"], description: "Optional source scope." },
-        regex: stringField("Optional regular-expression search."),
-        case_sensitive: booleanField("Use case-sensitive matching.", false),
+        project_id: stringField("OpenReel project UUID."),
+        operations: {
+          type: "array",
+          description: "Ordered canvas operations. Later operations may reference an earlier create with client:<client_ref>.",
+          minItems: 1,
+          items: {
+            oneOf: [
+              objectSchema({
+                op: { const: "create_node" },
+                client_ref: stringField("Optional patch-local id for later client:<ref> references."),
+                type: { type: "string", enum: ["text", "image", "video", "audio"] },
+                fields: nodeFieldsSchema("Node fields preflighted against the dynamic contract."),
+                name: stringField("Optional title alias."),
+                prompt: stringField("Optional prompt alias."),
+                parent_node_id: stringField("Optional parent node id or client:<ref>."),
+                position: positionSchema("Optional persisted position."),
+              }, ["op", "type"]),
+              objectSchema({
+                op: { const: "duplicate_node" },
+                node_id: stringField("Source node id or visible id."),
+                title_suffix: stringField("Suffix appended to the duplicated title."),
+                offset_x: numberField("Horizontal offset."),
+                offset_y: numberField("Vertical offset."),
+              }, ["op", "node_id"]),
+              objectSchema({
+                op: { const: "update_node" },
+                node_id: stringField("Node id, visible id, or client:<ref>."),
+                patch: objectField("Node fields or persisted node patch."),
+              }, ["op", "node_id", "patch"]),
+              objectSchema({
+                op: { const: "move_node" },
+                node_id: stringField("Node id, visible id, or client:<ref>."),
+                x: numberField("Canvas x coordinate."),
+                y: numberField("Canvas y coordinate."),
+              }, ["op", "node_id", "x", "y"]),
+              objectSchema({
+                op: { const: "connect_nodes" },
+                source_node_id: stringField("Source node id, visible id, or client:<ref>."),
+                target_node_id: stringField("Target node id, visible id, or client:<ref>."),
+                label: stringField("Optional edge label."),
+              }, ["op", "source_node_id", "target_node_id"]),
+              objectSchema({
+                op: { const: "update_edge" },
+                edge_id: stringField("Persisted edge id."),
+                label: stringField("New label; omit or pass an empty string to clear it."),
+              }, ["op", "edge_id"]),
+              objectSchema({
+                op: { const: "switch_node_history" },
+                node_id: stringField("Image, video, or audio node id."),
+                history_id: stringField("History item id."),
+                index: { type: "integer", minimum: 0, description: "History index when history_id is omitted." },
+              }, ["op", "node_id"]),
+            ],
+          },
+        },
       },
-      ["category"],
+      ["project_id", "operations"],
     ),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
-    name: "openreel_get_skill",
-    title: "Read OpenReel Production Skill",
-    description: "Read an OpenReel skill summary or full content without invoking an OpenReel agent.",
+    name: "openreel_delete_canvas_items",
+    title: "Delete or Restore OpenReel Canvas Items",
+    description:
+      "Delete selected nodes or edges, or restore a known canvas snapshot. Requires confirm=true after explicit user authorization.",
     inputSchema: objectSchema(
       {
-        name: stringField("Exact skill name returned by openreel_search_skills."),
-        category: { type: "string", enum: ["workflow", "prompt", "review"], description: "Optional category constraint." },
-        scope: { type: "string", enum: ["user", "builtin"], description: "Optional source scope." },
-        detail: { type: "string", enum: ["summary", "full"], description: "Read summary or full content." },
+        project_id: stringField("OpenReel project UUID."),
+        node_ids: stringArrayField("Node ids or visible ids to delete."),
+        edge_ids: stringArrayField("Persisted edge ids to delete."),
+        edges: {
+          type: "array",
+          description: "Edges to delete by source/target pair.",
+          items: objectSchema({
+            source_node_id: stringField("Source node id or visible id."),
+            target_node_id: stringField("Target node id or visible id."),
+          }, ["source_node_id", "target_node_id"]),
+        },
+        restore_snapshot: {
+          type: "object",
+          description: "Optional known snapshot shaped as {nodes, edges} to restore.",
+          additionalProperties: false,
+          properties: {
+            nodes: { type: "array", items: { type: "object", additionalProperties: true } },
+            edges: { type: "array", items: { type: "object", additionalProperties: true } },
+          },
+          required: ["nodes", "edges"],
+        },
+        confirm: booleanField("Must be true after explicit user authorization."),
       },
-      ["name"],
+      ["project_id", "confirm"],
     ),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "openreel_run_nodes",
+    title: "Run OpenReel Canvas Nodes",
+    description: "Preflight and run one or several persisted nodes in order, optionally waiting for each terminal state.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        runs: {
+          type: "array",
+          minItems: 1,
+          items: objectSchema({
+            node_id: stringField("Node id or visible id."),
+            action: { type: "string", enum: ["run", "render", "force"] },
+            extra_fields: objectField("Temporary run fields."),
+            hidden_extra_field_keys: stringArrayField("Temporary keys excluded from persisted output."),
+            wait: booleanField("Wait for the persisted terminal state.", true),
+            wait_timeout_seconds: { type: "integer", minimum: 1, maximum: 1200 },
+          }, ["node_id"]),
+        },
+      },
+      ["project_id", "runs"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
 ];
+
+const EXPOSED_TOOL_NAMES = new Set([
+  "openreel_connection_info",
+  "openreel_list_projects",
+  "openreel_get_canvas",
+  "openreel_describe_node_contract",
+  "openreel_apply_canvas_patch",
+  "openreel_delete_canvas_items",
+  "openreel_run_nodes",
+  "openreel_upload_node_media",
+]);
 
 function requireString(value, name) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -691,6 +927,41 @@ async function resolveInternalNodeId(projectId, nodeId) {
   return String(result?._canvas_node_id || result?._canvas_id || result?.canvas_node_id || result?.id || requested);
 }
 
+function nodePosition(node) {
+  const nested = node?.position && typeof node.position === "object" ? node.position : {};
+  const x = Number(nested.x ?? node?.position_x);
+  const y = Number(nested.y ?? node?.position_y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+async function setNodePosition(projectId, nodeId, position) {
+  const internalId = await resolveInternalNodeId(projectId, nodeId);
+  const x = Number(position?.x);
+  const y = Number(position?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("Canvas position requires finite x and y values.");
+  return requestOpenReel(
+    `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/position`,
+    { method: "PATCH", json: { x, y } },
+  );
+}
+
+async function applyCreatedPositions(projectId, result, args) {
+  const placements = [];
+  if (Array.isArray(args.nodes)) {
+    for (const created of Array.isArray(result?.nodes) ? result.nodes : []) {
+      const source = args.nodes[Number(created?.index)];
+      if (!source?.position) continue;
+      const nodeId = created?._canvas_id || created?._canvas_node_id || created?.id;
+      if (!nodeId) continue;
+      placements.push(await setNodePosition(projectId, nodeId, source.position));
+    }
+  } else if (args.position) {
+    const nodeId = result?._canvas_id || result?._canvas_node_id || result?.id;
+    if (nodeId) placements.push(await setNodePosition(projectId, nodeId, args.position));
+  }
+  return placements.length ? { ...result, placements } : result;
+}
+
 async function waitForNode({ project_id, node_id, timeout_seconds = 600, poll_interval_seconds = 2 }) {
   const projectId = requireString(project_id, "project_id");
   const internalId = await resolveInternalNodeId(projectId, node_id);
@@ -749,6 +1020,19 @@ function mimeTypeFor(filePath) {
       ".m4v": "video/x-m4v",
     }[extension] ?? "application/octet-stream"
   );
+}
+
+function resolvePatchRefs(value, refs) {
+  if (typeof value === "string" && value.startsWith("client:")) {
+    const resolved = refs.get(value.slice("client:".length));
+    if (!resolved) throw new Error(`Unknown patch-local reference: ${value}`);
+    return resolved;
+  }
+  if (Array.isArray(value)) return value.map((item) => resolvePatchRefs(item, refs));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolvePatchRefs(item, refs)]));
+  }
+  return value;
 }
 
 const HANDLERS = {
@@ -816,6 +1100,152 @@ const HANDLERS = {
     return requestOpenReel(`/api/projects/${projectId}/nodes`);
   },
 
+  async openreel_apply_canvas_patch(args) {
+    const projectId = requireString(args.project_id, "project_id");
+    if (!Array.isArray(args.operations) || args.operations.length === 0) {
+      throw new Error("operations must be a non-empty array.");
+    }
+    const refs = new Map();
+    const results = [];
+    for (let index = 0; index < args.operations.length; index += 1) {
+      try {
+        const operation = resolvePatchRefs(args.operations[index], refs);
+        const op = requireString(operation?.op, `operations[${index}].op`);
+        let result;
+        if (op === "create_node") {
+          const createArgs = {
+            project_id: projectId,
+            type: operation.type,
+            fields: operation.fields ?? {},
+            name: operation.name,
+            prompt: operation.prompt,
+            parent_node_id: operation.parent_node_id,
+            position: operation.position,
+          };
+          const preflight = await preflightCreateArgs(createArgs);
+          if (preflight.ok !== true) result = preflight;
+          else {
+            const normalized = preflight.args;
+            const created = await callOpenReelTool("node.create", omitUndefined({
+              project_id: projectId,
+              type: normalized.type,
+              fields: normalized.fields,
+              name: normalized.name,
+              prompt: normalized.prompt,
+              parent_node_id: normalized.parent_node_id,
+            }));
+            result = created?.ok === false ? created : await applyCreatedPositions(projectId, created, normalized);
+            if (result?.ok !== false && operation.client_ref) {
+              const createdId = result?.id || result?._canvas_id || result?._canvas_node_id;
+              if (!createdId) throw new Error("Created node did not return an id for client_ref.");
+              refs.set(requireString(operation.client_ref, "client_ref"), String(createdId));
+            }
+          }
+        } else if (op === "duplicate_node") {
+          result = await HANDLERS.openreel_duplicate_nodes({
+            project_id: projectId,
+            node_ids: [operation.node_id],
+            title_suffix: operation.title_suffix,
+            offset_x: operation.offset_x,
+            offset_y: operation.offset_y,
+          });
+        } else if (op === "update_node") {
+          result = await callOpenReelTool("node.update", {
+            project_id: projectId,
+            node_id: requireString(operation.node_id, "node_id"),
+            patch: operation.patch,
+          });
+        } else if (op === "move_node") {
+          result = await setNodePosition(projectId, operation.node_id, { x: operation.x, y: operation.y });
+        } else if (op === "connect_nodes") {
+          result = await HANDLERS.openreel_connect_nodes({
+            project_id: projectId,
+            source_node_id: operation.source_node_id,
+            target_node_id: operation.target_node_id,
+            label: operation.label,
+          });
+        } else if (op === "update_edge") {
+          result = await HANDLERS.openreel_update_edges({
+            project_id: projectId,
+            edge_id: operation.edge_id,
+            label: operation.label,
+          });
+        } else if (op === "switch_node_history") {
+          result = await HANDLERS.openreel_switch_node_history({
+            project_id: projectId,
+            node_id: operation.node_id,
+            history_id: operation.history_id,
+            index: operation.index,
+          });
+        } else {
+          throw new Error(`Unsupported canvas patch operation: ${op}`);
+        }
+        results.push({ index, op, result });
+        if (result?.ok === false) {
+          return { ok: false, applied_count: index, failed_index: index, results, error: result.error || `${op} failed` };
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          applied_count: index,
+          failed_index: index,
+          results,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    return { ok: true, applied_count: results.length, results, client_refs: Object.fromEntries(refs) };
+  },
+
+  async openreel_delete_canvas_items(args) {
+    if (args.confirm !== true) throw new Error("confirm must be true after explicit user authorization.");
+    const projectId = requireString(args.project_id, "project_id");
+    const result = { ok: true };
+    if ((Array.isArray(args.edge_ids) && args.edge_ids.length) || (Array.isArray(args.edges) && args.edges.length)) {
+      result.edges = await HANDLERS.openreel_delete_edges({
+        project_id: projectId,
+        edge_ids: args.edge_ids,
+        edges: args.edges,
+        confirm: true,
+      });
+    }
+    if (Array.isArray(args.node_ids) && args.node_ids.length) {
+      result.nodes = await HANDLERS.openreel_delete_nodes({
+        project_id: projectId,
+        node_ids: args.node_ids,
+        confirm: true,
+      });
+    }
+    if (args.restore_snapshot) {
+      result.restore = await HANDLERS.openreel_restore_canvas_snapshot({
+        project_id: projectId,
+        nodes: args.restore_snapshot.nodes,
+        edges: args.restore_snapshot.edges,
+        confirm: true,
+      });
+    }
+    if (!result.edges && !result.nodes && !result.restore) {
+      throw new Error("Provide node_ids, edge_ids/edges, or restore_snapshot.");
+    }
+    result.ok = [result.edges, result.nodes, result.restore].filter(Boolean).every((item) => item?.ok !== false);
+    return result;
+  },
+
+  async openreel_run_nodes(args) {
+    const projectId = requireString(args.project_id, "project_id");
+    if (!Array.isArray(args.runs) || args.runs.length === 0) throw new Error("runs must be a non-empty array.");
+    const results = [];
+    for (let index = 0; index < args.runs.length; index += 1) {
+      const run = args.runs[index];
+      const result = await HANDLERS.openreel_run_node({ project_id: projectId, ...run });
+      results.push({ index, node_id: run.node_id, result });
+      if (result?.ok === false) {
+        return { ok: false, completed_count: index, failed_index: index, results, error: result.error || "Node run failed." };
+      }
+    }
+    return { ok: true, completed_count: results.length, results };
+  },
+
   async openreel_list_nodes(args) {
     return callOpenReelTool("node.list", omitUndefined({
       project_id: args.project_id,
@@ -849,7 +1279,7 @@ const HANDLERS = {
     const preflight = await preflightCreateArgs(args);
     if (preflight.ok !== true) return preflight;
     const normalized = preflight.args;
-    return callOpenReelTool("node.create", omitUndefined({
+    const result = await callOpenReelTool("node.create", omitUndefined({
       project_id: normalized.project_id,
       type: normalized.type,
       fields: normalized.fields,
@@ -858,6 +1288,62 @@ const HANDLERS = {
       parent_node_id: normalized.parent_node_id,
       nodes: normalized.nodes,
     }));
+    if (result?.ok === false) return result;
+    return applyCreatedPositions(normalized.project_id, result, normalized);
+  },
+
+  async openreel_duplicate_nodes(args) {
+    const projectId = requireString(args.project_id, "project_id");
+    if (!Array.isArray(args.node_ids) || args.node_ids.length === 0) {
+      throw new Error("node_ids must be a non-empty array.");
+    }
+    const suffix = typeof args.title_suffix === "string" ? args.title_suffix : " 副本";
+    const offsetX = boundedNumber(args.offset_x, 48, -2000, 2000);
+    const offsetY = boundedNumber(args.offset_y, 48, -2000, 2000);
+    const duplicates = [];
+    for (let index = 0; index < args.node_ids.length; index += 1) {
+      const requestedId = requireString(args.node_ids[index], `node_ids[${index}]`);
+      const source = await callOpenReelTool("node.get", { project_id: projectId, node_id: requestedId });
+      if (!source || source.ok === false || source.error) {
+        throw new Error(`Cannot read source node ${requestedId}: ${source?.error || "node.get failed"}`);
+      }
+      const fields = nodeInputFields(source);
+      delete fields.render_state;
+      delete fields.uploaded_output;
+      const sourceTitle = String(source.title || fields.title || source.type || "节点");
+      fields.title = `${sourceTitle}${suffix}`;
+      const contract = await requestNodeContract(projectId, source.type, fields);
+      if (contract?.ok !== true || contract?.ready !== true) {
+        return { ...contractFailure(contract, index), source_node_id: requestedId, duplicates };
+      }
+      const created = await callOpenReelTool("node.create", {
+        project_id: projectId,
+        type: source.type,
+        fields: contract.normalized_fields ?? fields,
+        name: fields.title,
+        prompt: source.prompt || fields.prompt,
+      });
+      if (created?.ok === false) return { ok: false, error: created.error || "Duplicate creation failed.", duplicates };
+
+      let sourcePosition = nodePosition(source);
+      if (!sourcePosition) {
+        const internalSourceId = await resolveInternalNodeId(projectId, requestedId);
+        const detail = await requestOpenReel(
+          `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalSourceId, "node_id")}`,
+        );
+        sourcePosition = nodePosition(detail);
+      }
+      const createdId = created?._canvas_id || created?._canvas_node_id || created?.id;
+      let placement = null;
+      if (sourcePosition && createdId) {
+        placement = await setNodePosition(projectId, createdId, {
+          x: sourcePosition.x + offsetX * (index + 1),
+          y: sourcePosition.y + offsetY * (index + 1),
+        });
+      }
+      duplicates.push({ source_node_id: requestedId, node: created, placement });
+    }
+    return { ok: true, duplicated_count: duplicates.length, duplicates };
   },
 
   async openreel_update_nodes(args) {
@@ -870,13 +1356,20 @@ const HANDLERS = {
     }));
   },
 
-  async openreel_move_node(args) {
+  async openreel_move_nodes(args) {
     const projectId = requireString(args.project_id, "project_id");
-    const internalId = await resolveInternalNodeId(projectId, args.node_id);
-    return requestOpenReel(
-      `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/position`,
-      { method: "PATCH", json: { x: Number(args.x), y: Number(args.y) } },
-    );
+    const moves = Array.isArray(args.moves)
+      ? args.moves
+      : [{ node_id: args.node_id, x: args.x, y: args.y }];
+    if (moves.length === 0 || moves.some((item) => !item || typeof item !== "object")) {
+      throw new Error("Provide node_id/x/y or a non-empty moves array.");
+    }
+    const results = [];
+    for (let index = 0; index < moves.length; index += 1) {
+      const item = moves[index];
+      results.push(await setNodePosition(projectId, item.node_id, { x: item.x, y: item.y }));
+    }
+    return { ok: true, moved_count: results.length, results };
   },
 
   async openreel_connect_nodes(args) {
@@ -891,6 +1384,54 @@ const HANDLERS = {
     });
   },
 
+  async openreel_update_edges(args) {
+    const projectId = requireString(args.project_id, "project_id");
+    const updates = Array.isArray(args.updates)
+      ? args.updates
+      : [{ edge_id: args.edge_id, label: args.label }];
+    if (updates.length === 0) throw new Error("Provide edge_id/label or a non-empty updates array.");
+    const results = [];
+    for (let index = 0; index < updates.length; index += 1) {
+      const item = updates[index];
+      const edgeId = requireString(item?.edge_id, `updates[${index}].edge_id`);
+      results.push(await requestOpenReel(
+        `/api/projects/${encodeSegment(projectId, "project_id")}/edges/${encodeSegment(edgeId, "edge_id")}`,
+        { method: "PATCH", json: { label: typeof item.label === "string" && item.label ? item.label : null } },
+      ));
+    }
+    return { ok: true, updated_count: results.length, results };
+  },
+
+  async openreel_delete_edges(args) {
+    if (args.confirm !== true) throw new Error("confirm must be true after explicit user authorization.");
+    const projectId = requireString(args.project_id, "project_id");
+    const targets = [];
+    for (const edgeId of Array.isArray(args.edge_ids) ? args.edge_ids : []) {
+      targets.push({ edge_id: requireString(edgeId, "edge_id") });
+    }
+    for (const edge of Array.isArray(args.edges) ? args.edges : []) {
+      const [sourceId, targetId] = await Promise.all([
+        resolveInternalNodeId(projectId, edge?.source_node_id),
+        resolveInternalNodeId(projectId, edge?.target_node_id),
+      ]);
+      targets.push({ source_node_id: sourceId, target_node_id: targetId });
+    }
+    if (targets.length === 0) throw new Error("edge_ids or edges must contain at least one edge.");
+    const results = [];
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      const edgeId = target.edge_id || `by-endpoints-${index}`;
+      const query = target.edge_id
+        ? ""
+        : `?source_node_id=${encodeURIComponent(target.source_node_id)}&target_node_id=${encodeURIComponent(target.target_node_id)}`;
+      results.push(await requestOpenReel(
+        `/api/projects/${encodeSegment(projectId, "project_id")}/edges/${encodeSegment(edgeId, "edge_id")}${query}`,
+        { method: "DELETE" },
+      ));
+    }
+    return { ok: true, deleted_count: results.length, results };
+  },
+
   async openreel_delete_nodes(args) {
     if (args.confirm !== true) throw new Error("confirm must be true after explicit user authorization.");
     if (!Array.isArray(args.node_ids) || args.node_ids.length === 0) throw new Error("node_ids must be a non-empty array.");
@@ -899,6 +1440,30 @@ const HANDLERS = {
     return requestOpenReel(`/api/projects/${encodeSegment(projectId, "project_id")}/nodes/delete`, {
       method: "POST",
       json: { node_ids: nodeIds },
+    });
+  },
+
+  async openreel_switch_node_history(args) {
+    if (!args.history_id && !Number.isInteger(args.index)) {
+      throw new Error("history_id or a non-negative index is required.");
+    }
+    const projectId = requireString(args.project_id, "project_id");
+    const internalId = await resolveInternalNodeId(projectId, args.node_id);
+    return requestOpenReel(
+      `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/history/switch`,
+      { method: "POST", json: omitUndefined({ history_id: args.history_id, index: args.index }) },
+    );
+  },
+
+  async openreel_restore_canvas_snapshot(args) {
+    if (args.confirm !== true) throw new Error("confirm must be true after explicit user authorization.");
+    if (!Array.isArray(args.nodes) || !Array.isArray(args.edges)) {
+      throw new Error("nodes and edges must be arrays.");
+    }
+    const projectId = requireString(args.project_id, "project_id");
+    return requestOpenReel(`/api/projects/${encodeSegment(projectId, "project_id")}/canvas/restore-snapshot`, {
+      method: "POST",
+      json: { nodes: args.nodes, edges: args.edges },
     });
   },
 
@@ -960,25 +1525,6 @@ const HANDLERS = {
     return requestOpenReel(`/api/tools/config/${kind}-protocols`);
   },
 
-  async openreel_search_skills(args) {
-    return callOpenReelTool("skill.search", omitUndefined({
-      query: args.query,
-      queries: args.queries,
-      category: args.category,
-      scope: args.scope,
-      regex: args.regex,
-      case_sensitive: args.case_sensitive,
-    }));
-  },
-
-  async openreel_get_skill(args) {
-    return callOpenReelTool("skill.get", omitUndefined({
-      name: args.name,
-      category: args.category,
-      scope: args.scope,
-      detail: args.detail === "summary" ? "" : args.detail,
-    }));
-  },
 };
 
 function asStructuredContent(data) {
@@ -1016,7 +1562,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex is the OpenReel orchestrator. Use these atomic project/canvas/node tools directly. Never call or delegate to OpenReel /api/chat or its agent loop. Read current ids and state before writes, use references for creative dependencies, and require explicit user authorization for destructive tools.",
+        "Codex is the OpenReel orchestrator. Read the canvas first, use the typed canvas patch for non-destructive edits, and keep deletion/restoration in the confirmed destructive tool. Never call or delegate to OpenReel /api/chat or its agent loop. Use references for creative dependencies and require explicit user authorization for destructive tools.",
     });
     return;
   }
@@ -1027,12 +1573,16 @@ async function handleRequest(message) {
   }
 
   if (method === "tools/list") {
-    sendResult(id, { tools: TOOLS });
+    sendResult(id, { tools: TOOLS.filter((tool) => EXPOSED_TOOL_NAMES.has(tool.name)) });
     return;
   }
 
   if (method === "tools/call") {
     const name = String(params?.name ?? "");
+    if (!EXPOSED_TOOL_NAMES.has(name)) {
+      sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown or private tool: ${name}`);
+      return;
+    }
     const handler = HANDLERS[name];
     if (!handler) {
       sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${name}`);

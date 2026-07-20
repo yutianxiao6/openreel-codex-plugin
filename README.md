@@ -1,8 +1,8 @@
 # OpenReel Codex Plugin
 
-让 Codex 直接连接并操作正在运行的 [OpenReel Studio](https://github.com/yutianxiao6/openreel-studio)：读取项目和画布、按当前模型协议预检节点参数、创建或更新节点、管理依赖、上传素材并运行节点。
+让 Codex 直接连接并操作正在运行的 [OpenReel Studio](https://github.com/yutianxiao6/openreel-studio)：读取项目和画布、按当前模型协议预检节点参数、批量修改画布、上传素材并运行节点。插件只公开 8 个紧凑工具，细粒度画布操作留在桥接器内部。
 
-这个仓库只承载“Codex → OpenReel”的可选外部插件。OpenReel 聊天区内置的 Codex 连接仍由 OpenReel 主仓维护，不属于本插件，也不会因安装本插件而被替换或强制启用。
+这个仓库承载唯一的“Codex → OpenReel”连接方式。OpenReel 主程序不内嵌 Codex，也不会启动 Codex 后台进程；安装本插件后，用户仍需在 Codex 中明确要求连接和操作 OpenReel。
 
 ## 安装
 
