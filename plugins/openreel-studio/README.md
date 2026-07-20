@@ -8,6 +8,8 @@
 
 OpenReel 桌面安装版启动时，会在 `127.0.0.1` 上启动仅本机可访问的 FastAPI 服务，端口从 `7860` 起动态选择。插件会扫描安装版端口范围，并且只有在 `/api/health` 返回 `app: openreel-studio` 后才建立连接，因此不依赖网页地址、Electron 窗口对象或固定端口。
 
+本机服务未启用认证时，不需要设置用户名、密码或 token。
+
 使用时只需：
 
 1. 启动 OpenReel 桌面版并保持运行。
@@ -34,6 +36,8 @@ export OPENREEL_TOKEN="your-token"
 ```
 
 `OPENREEL_BASE_URL` 是站点根或 `/studio` 根，不要带 `/api`。插件不会默认连接任何公网 OpenReel 站点。
+
+这些变量都是可选的运行时配置：远程 Basic Auth 同时设置用户名和密码，支持 bearer 的网关只设置 token，未启用认证的服务只设置地址即可。插件清单仅允许 Codex 把已存在的变量转发给 MCP 子进程，不会写入、保存或返回任何密码和 token。
 
 高级选项：
 

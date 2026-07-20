@@ -2,19 +2,31 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 
 const BRIDGE_PATH = fileURLToPath(new URL("../scripts/openreel-mcp.mjs", import.meta.url));
+const MCP_MANIFEST_PATH = fileURLToPath(new URL("../.mcp.json", import.meta.url));
+const FORWARDED_ENV_VARS = [
+  "OPENREEL_BASE_URL",
+  "OPENREEL_USERNAME",
+  "OPENREEL_PASSWORD",
+  "OPENREEL_TOKEN",
+  "OPENREEL_DISCOVERY_PORTS",
+  "OPENREEL_REQUEST_TIMEOUT_MS",
+];
 
 async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   const calls = [];
+  const requests = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null;
+    requests.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("Content-Type", "application/json");
     if (request.url === "/api/health") {
       response.end(JSON.stringify({ status: "ok", app: "openreel-studio", version: "test" }));
@@ -48,9 +60,50 @@ async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     calls,
+    requests,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
+
+test("plugin manifest forwards optional OpenReel connection settings without storing secrets", async () => {
+  const manifest = JSON.parse(await readFile(MCP_MANIFEST_PATH, "utf8"));
+  const server = manifest.mcpServers?.["openreel-studio"];
+
+  assert.deepEqual(server.env_vars, FORWARDED_ENV_VARS);
+  assert.equal(server.env, undefined);
+});
+
+test("bridge supports unauthenticated, Basic, and Bearer connections", async (t) => {
+  const cases = [
+    { name: "none", env: {}, expected: undefined },
+    {
+      name: "basic",
+      env: { OPENREEL_USERNAME: "test-user", OPENREEL_PASSWORD: "test-password" },
+      expected: `Basic ${Buffer.from("test-user:test-password").toString("base64")}`,
+    },
+    { name: "bearer", env: { OPENREEL_TOKEN: "test-token" }, expected: "Bearer test-token" },
+  ];
+
+  for (const authCase of cases) {
+    await t.test(authCase.name, async () => {
+      const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
+      const bridge = startBridge(fake.baseUrl, authCase.env);
+      try {
+        await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+        const response = await bridge.call("tools/call", {
+          name: "openreel_connection_info",
+          arguments: { refresh: true },
+        });
+        const healthRequest = fake.requests.find((request) => request.url === "/api/health");
+        assert.equal(healthRequest?.headers.authorization, authCase.expected);
+        assert.equal(response.result.structuredContent.authentication, authCase.name);
+      } finally {
+        await bridge.close();
+        await fake.close();
+      }
+    });
+  }
+});
 
 test("tool surface loads common CRUD directly and defers uncommon capabilities", async () => {
   const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
@@ -291,9 +344,12 @@ test("project CRUD including confirmed deletion is directly available", async ()
   }
 });
 
-function startBridge(baseUrl) {
+function startBridge(baseUrl, extraEnv = {}) {
+  const env = { ...process.env };
+  for (const name of FORWARDED_ENV_VARS) delete env[name];
+  Object.assign(env, { OPENREEL_BASE_URL: baseUrl }, extraEnv);
   const child = spawn(process.execPath, [BRIDGE_PATH, "--stdio"], {
-    env: { ...process.env, OPENREEL_BASE_URL: baseUrl },
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   const pending = new Map();

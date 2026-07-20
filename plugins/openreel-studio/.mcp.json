@@ -7,6 +7,14 @@
         "--stdio"
       ],
       "cwd": ".",
+      "env_vars": [
+        "OPENREEL_BASE_URL",
+        "OPENREEL_USERNAME",
+        "OPENREEL_PASSWORD",
+        "OPENREEL_TOKEN",
+        "OPENREEL_DISCOVERY_PORTS",
+        "OPENREEL_REQUEST_TIMEOUT_MS"
+      ],
       "tool_timeout_sec": 1200
     }
   }
