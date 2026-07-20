@@ -28,11 +28,12 @@ This is an opt-in control mode. Installing the plugin does not replace OpenReel'
 1. Connect, then call `openreel_list_projects` and select the exact project id. Create a project only when the user asks for a new one.
 2. Read `openreel_get_canvas` or `openreel_list_nodes` before changing an existing canvas. Use `openreel_get_nodes` for full fields and outputs.
 3. For a production workflow or unfamiliar media method, call `openreel_search_skills` with an explicit `workflow`, `prompt`, or `review` category, then read only the relevant skill.
-4. Create or update nodes. Use `fields.references` for creative dependencies so OpenReel owns and displays the corresponding edges. Use `openreel_connect_nodes` only when a direct graph edge is specifically needed.
-5. For image nodes, provide both `aspect_ratio` and an exact matching `resolution` such as `1920x1080`; read current project or model settings instead of inventing a tier label.
-6. For image, video, or audio generation, write the production prompt and model-facing fields before calling `openreel_run_node`.
-7. Wait for the persisted terminal state and inspect the output. A provider accepting a job is not proof that the node completed.
-8. Repair failed nodes in place with `openreel_update_nodes`, then rerun the same node unless the user explicitly wants an alternative node.
+4. Before creating each node type, call `openreel_describe_node_contract` with the candidate fields. Use its `normalized_fields`, dynamic provider defaults, supported values, and field-level errors; `openreel_create_nodes` repeats this preflight and refuses invalid writes.
+5. Create or update nodes. Use `fields.references` for creative dependencies so OpenReel owns and displays the corresponding edges. Use `openreel_connect_nodes` only when a direct graph edge is specifically needed.
+6. For image nodes, provide both `aspect_ratio` and an exact matching `resolution` such as `1920x1080`. The contract may read them from current project output settings but never invents a hardcoded image size when they are absent.
+7. For image, video, or audio generation, write the production prompt and model-facing fields before calling `openreel_run_node`; the bridge reads the persisted node and repeats the dynamic contract preflight before provider execution.
+8. Wait for the persisted terminal state and inspect the output. A provider accepting a job is not proof that the node completed.
+9. Repair failed nodes in place with `openreel_update_nodes`, then rerun the same node unless the user explicitly wants an alternative node.
 
 ## Canvas handling
 
@@ -46,6 +47,7 @@ This is an opt-in control mode. Installing the plugin does not replace OpenReel'
 
 - Call `openreel_get_model_config` when model selection or provider capability matters. It returns parsed configuration with secrets masked and never returns raw config text.
 - Call `openreel_list_media_protocols` to inspect image, video, or audio protocol capabilities.
+- Treat `openreel_describe_node_contract` as the authoritative merged view for the current project, provider, model profile, video mode, and candidate fields. Do not bypass a `ready=false` result.
 - Do not invent provider ids, model ids, image counts, reference limits, durations, or resolutions when these can be read from OpenReel.
 
 ## Safety

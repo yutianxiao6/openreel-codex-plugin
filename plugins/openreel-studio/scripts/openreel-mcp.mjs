@@ -42,6 +42,30 @@ const stringArrayField = (description) => ({
   description,
   items: { type: "string" },
 });
+const nodeFieldsSchema = (description) => ({
+  type: "object",
+  description,
+  additionalProperties: true,
+  properties: {
+    title: stringField("User-visible node title."),
+    content: stringField("Text-node body."),
+    description: stringField("Optional node description."),
+    prompt: stringField("Final model-facing prompt for image, video, or audio nodes."),
+    aspect_ratio: stringField("Aspect ratio such as 16:9 or 9:16."),
+    resolution: stringField("Image exact pixels such as 2560x1440, or a provider-declared video resolution."),
+    quality: stringField("Provider-supported quality value."),
+    duration_seconds: { type: "number", exclusiveMinimum: 0, description: "Requested media duration in seconds." },
+    model: stringField("Configured OpenReel provider name or model name."),
+    provider: stringField("Configured OpenReel provider name."),
+    video_mode: stringField("Provider-supported video generation mode."),
+    production_path: stringField("Creative production path or method."),
+    references: { type: "array", description: "Creative dependencies as refs or {ref, role} objects." },
+    depends_on: { type: "array", description: "Explicit upstream dependencies." },
+    reference_images: { type: "array", description: "Image references." },
+    reference_videos: { type: "array", description: "Video references." },
+    reference_audios: { type: "array", description: "Audio references." },
+  },
+});
 
 const TOOLS = [
   {
@@ -168,6 +192,21 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
+    name: "openreel_describe_node_contract",
+    title: "Describe OpenReel Node Contract",
+    description:
+      "Read the current project/provider contract and preflight candidate fields without creating a node. Returns normalized dynamic defaults, supported values, and field-level errors.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        type: { type: "string", enum: ["text", "image", "video", "audio"], description: "Node type." },
+        fields: nodeFieldsSchema("Candidate fields to validate. Image dimensions are never hardcoded when absent."),
+      },
+      ["project_id", "type"],
+    ),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
     name: "openreel_create_nodes",
     title: "Create OpenReel Canvas Nodes",
     description:
@@ -176,14 +215,24 @@ const TOOLS = [
       {
         project_id: stringField("OpenReel project UUID."),
         type: { type: "string", enum: ["text", "image", "video", "audio"], description: "Type for a single node." },
-        fields: objectField("Node-first fields for a single node."),
+        fields: nodeFieldsSchema("Node-first fields for a single node. The bridge preflights these against OpenReel before creation."),
         name: stringField("Optional single-node title alias."),
         prompt: stringField("Optional single-node prompt alias."),
         parent_node_id: stringField("Optional parent node id."),
         nodes: {
           type: "array",
           description: "Batch node definitions accepted by OpenReel node.create.",
-          items: { type: "object", additionalProperties: true },
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              client_ref: stringField("Optional batch-local reference name."),
+              type: { type: "string", enum: ["text", "image", "video", "audio"] },
+              fields: nodeFieldsSchema("Candidate fields preflighted before batch creation."),
+              parent_node_id: stringField("Optional parent node id or client:<ref>."),
+            },
+            required: ["type"],
+          },
           minItems: 1,
         },
       },
@@ -261,7 +310,7 @@ const TOOLS = [
     name: "openreel_run_node",
     title: "Run OpenReel Node",
     description:
-      "Run an existing node directly through OpenReel's node runner. This may call the configured media or language model provider, but never the OpenReel chat agent.",
+      "Preflight and run an existing node directly through OpenReel's node runner. This may call the configured media or language model provider, but never the OpenReel chat agent.",
     inputSchema: objectSchema(
       {
         project_id: stringField("OpenReel project UUID."),
@@ -540,6 +589,96 @@ async function callOpenReelTool(tool, args) {
   return response?.result ?? response;
 }
 
+async function requestNodeContract(projectId, type, fields = {}) {
+  return requestOpenReel("/api/tools/node-contract", {
+    method: "POST",
+    json: {
+      project_id: requireString(projectId, "project_id"),
+      type: requireString(type, "type"),
+      fields: fields && typeof fields === "object" && !Array.isArray(fields) ? fields : {},
+    },
+  });
+}
+
+function contractFailure(contract, index) {
+  return {
+    ok: false,
+    error_kind: "node_contract_failed",
+    error: "OpenReel rejected the node fields before creation.",
+    ...(index === undefined ? {} : { batch_index: index }),
+    contract,
+    hint: "Repair the reported fields and retry creation. Do not bypass preflight or create a duplicate replacement node.",
+  };
+}
+
+async function preflightCreateArgs(args) {
+  const projectId = requireString(args.project_id, "project_id");
+  if (Array.isArray(args.nodes)) {
+    const normalizedNodes = [];
+    const contracts = [];
+    for (let index = 0; index < args.nodes.length; index += 1) {
+      const item = args.nodes[index];
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return contractFailure({ ok: false, ready: false, error: "Batch item must be an object." }, index);
+      }
+      const fields = item.fields && typeof item.fields === "object" && !Array.isArray(item.fields)
+        ? { ...item.fields }
+        : {};
+      const contract = await requestNodeContract(projectId, item.type, fields);
+      contracts.push(contract);
+      if (contract?.ok !== true || contract?.ready !== true) return contractFailure(contract, index);
+      normalizedNodes.push({ ...item, fields: contract.normalized_fields ?? fields });
+    }
+    return { ok: true, args: { ...args, nodes: normalizedNodes }, contracts };
+  }
+  const fields = args.fields && typeof args.fields === "object" && !Array.isArray(args.fields)
+    ? { ...args.fields }
+    : {};
+  if (!fields.prompt && typeof args.prompt === "string" && args.prompt.trim()) fields.prompt = args.prompt.trim();
+  const contract = await requestNodeContract(projectId, args.type, fields);
+  if (contract?.ok !== true || contract?.ready !== true) return contractFailure(contract);
+  return { ok: true, args: { ...args, fields: contract.normalized_fields ?? fields }, contracts: [contract] };
+}
+
+function nodeInputFields(node) {
+  for (const key of ["input", "input_json", "input_data", "fields"]) {
+    const value = node?.[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) return { ...value };
+  }
+  return {};
+}
+
+async function preflightExistingNode(args) {
+  const projectId = requireString(args.project_id, "project_id");
+  const node = await callOpenReelTool("node.get", {
+    project_id: projectId,
+    node_id: requireString(args.node_id, "node_id"),
+  });
+  if (!node || node.ok === false || node.error) {
+    return contractFailure({
+      ok: false,
+      ready: false,
+      error: node?.error || "OpenReel node could not be read before execution.",
+      error_kind: node?.error_kind || "node_not_found",
+    });
+  }
+  const fields = {
+    ...nodeInputFields(node),
+    ...(args.extra_fields && typeof args.extra_fields === "object" && !Array.isArray(args.extra_fields)
+      ? args.extra_fields
+      : {}),
+  };
+  const contract = await requestNodeContract(projectId, node.type, fields);
+  if (contract?.ok !== true || contract?.ready !== true) {
+    const failure = contractFailure(contract);
+    failure.error_kind = "node_run_preflight_failed";
+    failure.node_id = args.node_id;
+    failure.hint = "Update the existing node with the reported field repairs, then rerun that same node.";
+    return failure;
+  }
+  return { ok: true, contract };
+}
+
 async function resolveInternalNodeId(projectId, nodeId) {
   const requested = requireString(nodeId, "node_id");
   const result = await callOpenReelTool("node.get", {
@@ -702,15 +841,22 @@ const HANDLERS = {
     }));
   },
 
+  async openreel_describe_node_contract(args) {
+    return requestNodeContract(args.project_id, args.type, args.fields ?? {});
+  },
+
   async openreel_create_nodes(args) {
+    const preflight = await preflightCreateArgs(args);
+    if (preflight.ok !== true) return preflight;
+    const normalized = preflight.args;
     return callOpenReelTool("node.create", omitUndefined({
-      project_id: args.project_id,
-      type: args.type,
-      fields: args.fields,
-      name: args.name,
-      prompt: args.prompt,
-      parent_node_id: args.parent_node_id,
-      nodes: args.nodes,
+      project_id: normalized.project_id,
+      type: normalized.type,
+      fields: normalized.fields,
+      name: normalized.name,
+      prompt: normalized.prompt,
+      parent_node_id: normalized.parent_node_id,
+      nodes: normalized.nodes,
     }));
   },
 
@@ -757,6 +903,8 @@ const HANDLERS = {
   },
 
   async openreel_run_node(args) {
+    const preflight = await preflightExistingNode(args);
+    if (preflight.ok !== true) return preflight;
     const result = await callOpenReelTool("node.run", omitUndefined({
       project_id: args.project_id,
       node_id: args.node_id,

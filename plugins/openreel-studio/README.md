@@ -44,6 +44,7 @@ export OPENREEL_TOKEN="your-token"
 
 ```bash
 node scripts/openreel-mcp.mjs --check
+node --test tests/openreel-mcp.test.mjs
 ```
 
 返回的连接信息不会包含密码或 token。模型配置读取也只返回遮罩后的结构化配置，不会返回原始配置文件文本。
@@ -55,6 +56,7 @@ node scripts/openreel-mcp.mjs --check
 - 项目：列出、新建、读取、更新、确认后删除。
 - 画布：读取完整图、创建/更新/移动/连接节点、确认后删除节点。
 - 生产：读取制作 skill、读取遮罩模型配置、运行节点并等待真实终态。
+- 合同：创建节点前动态读取当前项目、provider、模型协议与模式限制，自动预检并返回字段级修复信息。
 - 素材：把本机图片或视频上传为对应节点的产物。
 
 它不暴露 `/api/chat`，也没有“调用 OpenReel Agent”的通用工具；创作判断、步骤安排和失败修复由 Codex 完成。
