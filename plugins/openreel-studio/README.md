@@ -47,22 +47,23 @@ node scripts/openreel-mcp.mjs --check
 node --test tests/openreel-mcp.test.mjs
 ```
 
-返回的连接信息不会包含密码或 token。模型配置读取也只返回遮罩后的结构化配置，不会返回原始配置文件文本。
+返回的连接信息不会包含密码或 token。能力搜索只返回短摘要，只有描述阶段才返回所选能力的参数 schema。
 
 ## 能力边界
 
-插件只向 Codex 公开 8 个 MCP 工具，避免把二十多个细粒度 schema 一次性塞进模型上下文：
+插件只向 Codex 公开 7 个 MCP 工具，具体画布操作保存在服务端 capability 目录中，不会把二十多个参数 schema 一次性塞进模型上下文：
 
 - `openreel_connection_info`：发现并验证安装版、源码版或远程 API。
 - `openreel_list_projects`：列出可操作项目。
 - `openreel_get_canvas`：一次读取完整节点、位置、媒体历史和依赖线。
-- `openreel_describe_node_contract`：动态读取当前 provider、模型协议、模式限制和字段级修复信息。
-- `openreel_apply_canvas_patch`：按顺序创建、复制、更新、移动节点，创建/改名依赖线，以及切换媒体历史。
-- `openreel_delete_canvas_items`：经明确确认后删除节点/依赖线，或恢复已知画布快照。
-- `openreel_run_nodes`：预检并顺序运行一个或多个节点，等待真实终态。
-- `openreel_upload_node_media`：把本机图片或视频上传为已有节点的完成产物。
+- `openreel_search_capabilities`：按意图搜索节点、依赖线、运行、上传、历史与恢复能力，只返回短摘要。
+- `openreel_describe_capability`：按需加载一个能力的精确 schema、使用边界、执行入口与 `schema_ref`。
+- `openreel_execute_capability`：校验 `schema_ref` 和参数后执行普通能力。
+- `openreel_execute_destructive_capability`：经明确确认后执行删除或快照恢复能力。
 
-`openreel_apply_canvas_patch` 使用带 `op` 的结构化操作数组，不是自由文本命令。一次调用可完成整组画布编辑，并在第一项失败时停止；`create_node` 可声明 `client_ref`，后续操作用 `client:<ref>` 精确引用刚创建的节点。细粒度 REST 和 `node.*` 调用只留在桥接器内部实现，不会出现在 Codex 的 `tools/list` 中。
+标准链路是 `search → describe → execute`。搜索结果不携带 schema；描述结果才返回当前能力的精确 `input_schema`。执行必须携带描述阶段返回的 `schema_ref`，后端会再次做 JSON Schema 校验，参数错误时不会请求 OpenReel。创建、复制、更新、移动、连线、历史切换、运行、等待、上传、删除和快照恢复等细粒度能力都可被搜索发现，但不会出现在初始 `tools/list` 中。
+
+需要一次完成多项依赖编辑时，可以搜索“批量画布 patch”。其延迟 schema 使用带 `op` 的结构化数组，支持通过 `client_ref` 和 `client:<ref>` 引用同一次调用中新建的节点，并在第一项失败时停止。
 
 创作流程、提示词方法和工作习惯由 Codex 自己的 skill 管理。插件不读取或暴露 OpenReel 内置 skill，只提供画布状态、动态节点合同和原子执行能力。
 

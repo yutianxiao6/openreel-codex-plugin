@@ -2,6 +2,7 @@
 
 import { openAsBlob } from "node:fs";
 import { stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -631,18 +632,453 @@ const TOOLS = [
     ),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
+  {
+    name: "openreel_search_capabilities",
+    title: "Search OpenReel Canvas Capabilities",
+    description:
+      "Search the server-side canvas capability catalog by intent. Returns compact capability ids and summaries without loading their parameter schemas.",
+    inputSchema: objectSchema(
+      {
+        query: stringField("What Codex needs to do, for example create nodes, move layout, run media, or delete an edge."),
+        limit: { type: "integer", minimum: 1, maximum: 10, description: "Maximum compact matches; defaults to 6." },
+      },
+      ["query"],
+    ),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "openreel_describe_capability",
+    title: "Describe OpenReel Canvas Capability",
+    description:
+      "Load one discovered capability's exact input schema, safety class, executor name, and usage notes before execution.",
+    inputSchema: objectSchema(
+      { capability: stringField("Exact capability id returned by openreel_search_capabilities.") },
+      ["capability"],
+    ),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "openreel_execute_capability",
+    title: "Execute OpenReel Canvas Capability",
+    description:
+      "Execute one previously described non-destructive canvas capability. The bridge verifies schema_ref and validates arguments against the deferred schema.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        capability: stringField("Exact non-destructive capability id."),
+        schema_ref: stringField("Exact schema_ref returned by openreel_describe_capability."),
+        arguments: objectField("Arguments matching the deferred input_schema; do not repeat project_id."),
+      },
+      ["project_id", "capability", "schema_ref", "arguments"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "openreel_execute_destructive_capability",
+    title: "Execute Destructive OpenReel Canvas Capability",
+    description:
+      "Execute one previously described destructive canvas capability after explicit user authorization and confirm=true.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("OpenReel project UUID."),
+        capability: stringField("Exact destructive capability id."),
+        schema_ref: stringField("Exact schema_ref returned by openreel_describe_capability."),
+        arguments: objectField("Arguments matching the deferred input_schema; do not repeat project_id or confirm."),
+        confirm: booleanField("Must be true after explicit user authorization."),
+      },
+      ["project_id", "capability", "schema_ref", "arguments", "confirm"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
 ];
 
 const EXPOSED_TOOL_NAMES = new Set([
   "openreel_connection_info",
   "openreel_list_projects",
   "openreel_get_canvas",
-  "openreel_describe_node_contract",
-  "openreel_apply_canvas_patch",
-  "openreel_delete_canvas_items",
-  "openreel_run_nodes",
-  "openreel_upload_node_media",
+  "openreel_search_capabilities",
+  "openreel_describe_capability",
+  "openreel_execute_capability",
+  "openreel_execute_destructive_capability",
 ]);
+
+const CAPABILITY_CATALOG_VERSION = "openreel.canvas.capabilities.v1";
+const CAPABILITY_CATALOG = [
+  {
+    id: "node.contract.describe",
+    handler: "openreel_describe_node_contract",
+    title: "Describe dynamic node contract",
+    summary: "Preflight candidate text, image, video, or audio fields against the current project, provider, model, and mode.",
+    keywords: "contract schema fields model provider resolution duration references 参数 合同 模型 分辨率 时长 参考图",
+    usage: "Use before authoring an unfamiliar media node. A ready=false result must be repaired before creation or execution.",
+  },
+  {
+    id: "node.list",
+    handler: "openreel_list_nodes",
+    title: "List or search nodes",
+    summary: "Find canvas nodes by type, status, surface, text, or regular expression.",
+    keywords: "list search find filter nodes status type query regex 列表 搜索 查找 筛选 节点 状态",
+    usage: "Use when the full canvas snapshot is too large or when only matching node ids are needed.",
+  },
+  {
+    id: "node.get",
+    handler: "openreel_get_nodes",
+    title: "Read node details",
+    summary: "Read detailed fields and outputs for one or several known node ids.",
+    keywords: "get read inspect details output input history node 读取 查看 详情 输出 输入 历史 节点",
+    usage: "Read before changing an existing node; visible ids such as #3 are accepted.",
+  },
+  {
+    id: "node.create",
+    handler: "openreel_create_nodes",
+    title: "Create canvas nodes",
+    summary: "Create one or a batch of text, image, video, or audio nodes with dynamic contract preflight and optional positions.",
+    keywords: "create add batch text image video audio position references node 创建 新建 批量 文本 图片 视频 音频 节点",
+    usage: "For media, describe node.contract.describe first. Batch items may use client_ref and client:<ref> dependencies.",
+  },
+  {
+    id: "node.duplicate",
+    handler: "openreel_duplicate_nodes",
+    title: "Duplicate canvas nodes",
+    summary: "Copy creative fields into new idle nodes while excluding generated output history and offsetting layout.",
+    keywords: "duplicate copy clone offset node 复制 克隆 副本 偏移 节点",
+    usage: "Use for editable alternatives; generated outputs and upload state are deliberately not copied.",
+  },
+  {
+    id: "node.update",
+    handler: "openreel_update_nodes",
+    title: "Update canvas nodes",
+    summary: "Patch one or several existing nodes in place, preserving ids and synchronizing reference edges.",
+    keywords: "update patch edit fields prompt references batch node 修改 更新 编辑 字段 提示词 引用 批量 节点",
+    usage: "Patch only relevant fields. Repair failed nodes in place instead of creating replacements.",
+  },
+  {
+    id: "node.move",
+    handler: "openreel_move_nodes",
+    title: "Move canvas nodes",
+    summary: "Persist exact canvas coordinates for one node or a batch of nodes.",
+    keywords: "move position layout coordinates x y batch node 移动 位置 布局 坐标 批量 节点",
+    usage: "Read the current canvas first and avoid moving unrelated nodes.",
+  },
+  {
+    id: "edge.create",
+    handler: "openreel_connect_nodes",
+    title: "Connect canvas nodes",
+    summary: "Create a direct persisted edge between two existing canvas nodes.",
+    keywords: "connect edge dependency source target label nodes 连线 边 依赖 来源 目标 标签 节点",
+    usage: "Prefer fields.references through node.update when the edge represents a creative dependency.",
+  },
+  {
+    id: "edge.update",
+    handler: "openreel_update_edges",
+    title: "Update canvas edges",
+    summary: "Change or clear labels on one or several persisted edges.",
+    keywords: "update edit rename edge label batch 修改 更新 重命名 连线 边 标签 批量",
+    usage: "Use the persisted edge id returned by openreel_get_canvas.",
+  },
+  {
+    id: "node.history.switch",
+    handler: "openreel_switch_node_history",
+    title: "Switch node media history",
+    summary: "Switch an image, video, or audio node to a stored media-history item.",
+    keywords: "history version switch media image video audio 历史 版本 切换 媒体 图片 视频 音频",
+    usage: "Provide either history_id or a non-negative history index from the node data.",
+  },
+  {
+    id: "canvas.patch",
+    handler: "openreel_apply_canvas_patch",
+    title: "Apply ordered canvas patch",
+    summary: "Apply a mixed ordered batch of create, duplicate, update, move, connect, edge-label, and history-switch operations.",
+    keywords: "canvas patch batch transaction ordered workflow client_ref create update move connect 画布 补丁 批量 顺序 工作流 创建 更新 移动 连线",
+    usage: "Use for multi-step edits. Later operations may reference a created node through client:<client_ref>; execution stops at the first failure.",
+  },
+  {
+    id: "node.run",
+    handler: "openreel_run_node",
+    title: "Run one canvas node",
+    summary: "Preflight and execute one existing node, optionally waiting for its persisted terminal state.",
+    keywords: "run render generate execute wait model media node 运行 渲染 生成 执行 等待 模型 媒体 节点",
+    usage: "This may spend model-provider quota. A queued provider job is not complete until the persisted node reaches a terminal state.",
+  },
+  {
+    id: "node.run_many",
+    handler: "openreel_run_nodes",
+    title: "Run several canvas nodes",
+    summary: "Preflight and execute several persisted nodes in order, stopping at the first failure.",
+    keywords: "run many batch sequence render generate nodes 批量 依次 运行 渲染 生成 节点",
+    usage: "Order upstream nodes before downstream nodes; each run may wait for a terminal result.",
+  },
+  {
+    id: "node.wait",
+    handler: "openreel_wait_for_node",
+    title: "Wait for node completion",
+    summary: "Poll one persisted node until it completes, fails, is cancelled, or times out.",
+    keywords: "wait poll status complete failed cancelled timeout node 等待 轮询 状态 完成 失败 取消 超时 节点",
+    usage: "Use after a non-waiting run when a later step depends on the persisted output.",
+  },
+  {
+    id: "node.media.upload",
+    handler: "openreel_upload_node_media",
+    title: "Upload media to a node",
+    summary: "Upload a local image or video file as the completed output of an existing matching node.",
+    keywords: "upload import local file media image video node 上传 导入 本地 文件 媒体 图片 视频 节点",
+    usage: "The file must be local to the Codex host and the target image/video node must already exist.",
+  },
+  {
+    id: "node.delete",
+    handler: "openreel_delete_nodes",
+    title: "Delete canvas nodes",
+    summary: "Permanently delete selected nodes and their incident edges.",
+    keywords: "delete remove nodes edges permanent 删除 移除 节点 连线 永久",
+    usage: "Destructive. Execute only after explicit user authorization.",
+    destructive: true,
+  },
+  {
+    id: "edge.delete",
+    handler: "openreel_delete_edges",
+    title: "Delete canvas edges",
+    summary: "Delete selected persisted edges by id or by source/target pair.",
+    keywords: "delete remove disconnect edge source target 删除 移除 断开 连线 边 来源 目标",
+    usage: "Destructive. Execute only after explicit user authorization.",
+    destructive: true,
+  },
+  {
+    id: "canvas.snapshot.restore",
+    handler: "openreel_restore_canvas_snapshot",
+    title: "Restore canvas snapshot",
+    summary: "Restore known node and edge snapshots, updating existing matching ids.",
+    keywords: "restore recover snapshot canvas nodes edges 恢复 还原 快照 画布 节点 连线",
+    usage: "Destructive recovery. Use only with a known snapshot after explicit user authorization.",
+    destructive: true,
+  },
+  {
+    id: "canvas.destructive_batch",
+    handler: "openreel_delete_canvas_items",
+    title: "Delete or restore canvas items in one call",
+    summary: "Delete nodes and edges and/or restore a known snapshot through one confirmed destructive operation.",
+    keywords: "batch destructive delete restore canvas nodes edges 批量 破坏性 删除 恢复 画布 节点 连线",
+    usage: "Destructive. Use only when the user authorizes the complete combined change.",
+    destructive: true,
+  },
+].map((item) => ({ destructive: false, ...item }));
+
+const CAPABILITY_BY_ID = new Map(CAPABILITY_CATALOG.map((item) => [item.id, item]));
+const INTERNAL_TOOL_BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function capabilityInputSchema(capability) {
+  const tool = INTERNAL_TOOL_BY_NAME.get(capability.handler);
+  if (!tool?.inputSchema) throw new Error(`Capability schema is missing for ${capability.id}.`);
+  const schema = cloneJson(tool.inputSchema);
+  if (schema.properties) {
+    delete schema.properties.project_id;
+    delete schema.properties.confirm;
+  }
+  if (Array.isArray(schema.required)) {
+    schema.required = schema.required.filter((name) => name !== "project_id" && name !== "confirm");
+  }
+  const selectProperties = (names) => Object.fromEntries(
+    names.filter((name) => schema.properties?.[name]).map((name) => [name, schema.properties[name]]),
+  );
+  if (capability.id === "node.create") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["type", "fields", "name", "prompt", "parent_node_id", "position"]), ["type"]),
+        objectSchema(selectProperties(["nodes"]), ["nodes"]),
+      ],
+    };
+  }
+  if (capability.id === "node.update") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["node_id", "patch"]), ["node_id", "patch"]),
+        objectSchema(selectProperties(["node_ids", "patch"]), ["node_ids", "patch"]),
+        objectSchema(selectProperties(["updates"]), ["updates"]),
+      ],
+    };
+  }
+  if (capability.id === "node.move") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["node_id", "x", "y"]), ["node_id", "x", "y"]),
+        objectSchema(selectProperties(["moves"]), ["moves"]),
+      ],
+    };
+  }
+  if (capability.id === "edge.update") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["edge_id", "label"]), ["edge_id"]),
+        objectSchema(selectProperties(["updates"]), ["updates"]),
+      ],
+    };
+  }
+  if (capability.id === "edge.delete") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["edge_ids"]), ["edge_ids"]),
+        objectSchema(selectProperties(["edges"]), ["edges"]),
+      ],
+    };
+  }
+  if (capability.id === "node.history.switch") {
+    return {
+      oneOf: [
+        objectSchema(selectProperties(["node_id", "history_id"]), ["node_id", "history_id"]),
+        objectSchema(selectProperties(["node_id", "index"]), ["node_id", "index"]),
+      ],
+    };
+  }
+  return schema;
+}
+
+function capabilitySchemaRef(capability) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(capabilityInputSchema(capability)))
+    .digest("hex")
+    .slice(0, 12);
+  return `${CAPABILITY_CATALOG_VERSION}:${capability.id}:${digest}`;
+}
+
+function normalizeSearchText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function capabilitySearchScore(capability, query) {
+  const normalized = normalizeSearchText(query);
+  if (!normalized) return 0;
+  const haystack = normalizeSearchText(
+    `${capability.id} ${capability.title} ${capability.summary} ${capability.keywords}`,
+  );
+  if (capability.id === normalized) return 1000;
+  let score = haystack.includes(normalized) ? 100 : 0;
+  const tokens = normalized.split(/[\s,，、/]+/).filter(Boolean);
+  for (const token of tokens) {
+    if (capability.id.includes(token)) score += 30;
+    else if (normalizeSearchText(capability.title).includes(token)) score += 20;
+    else if (haystack.includes(token)) score += 10;
+  }
+  for (const phrase of normalized.match(/[\u3400-\u9fff]{2,}/g) ?? []) {
+    for (let index = 0; index < phrase.length - 1; index += 1) {
+      if (haystack.includes(phrase.slice(index, index + 2))) score += 4;
+    }
+  }
+  return score;
+}
+
+function schemaTypeMatches(value, type) {
+  if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "null") return value === null;
+  return true;
+}
+
+function validateSchemaValue(value, schema, pathName = "arguments") {
+  if (!schema || typeof schema !== "object") return [];
+  if (Array.isArray(schema.oneOf)) {
+    const candidates = schema.oneOf.map((candidate) => validateSchemaValue(value, candidate, pathName));
+    if (candidates.some((errors) => errors.length === 0)) return [];
+    return [`${pathName} does not match any supported schema variant.`];
+  }
+  const errors = [];
+  if (Object.prototype.hasOwnProperty.call(schema, "const") && value !== schema.const) {
+    errors.push(`${pathName} must equal ${JSON.stringify(schema.const)}.`);
+    return errors;
+  }
+  if (schema.type && !schemaTypeMatches(value, schema.type)) {
+    errors.push(`${pathName} must be ${schema.type}.`);
+    return errors;
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    errors.push(`${pathName} must be one of ${schema.enum.map((item) => JSON.stringify(item)).join(", ")}.`);
+  }
+  if (typeof value === "string") {
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength) errors.push(`${pathName} is too short.`);
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) errors.push(`${pathName} is too long.`);
+  }
+  if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${pathName} must be >= ${schema.minimum}.`);
+    if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${pathName} must be <= ${schema.maximum}.`);
+    if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) {
+      errors.push(`${pathName} must be > ${schema.exclusiveMinimum}.`);
+    }
+  }
+  if (Array.isArray(value)) {
+    if (Number.isInteger(schema.minItems) && value.length < schema.minItems) errors.push(`${pathName} needs at least ${schema.minItems} item(s).`);
+    if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) errors.push(`${pathName} allows at most ${schema.maxItems} item(s).`);
+    if (schema.items) {
+      value.forEach((item, index) => errors.push(...validateSchemaValue(item, schema.items, `${pathName}[${index}]`)));
+    }
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    for (const required of Array.isArray(schema.required) ? schema.required : []) {
+      if (!Object.prototype.hasOwnProperty.call(value, required)) errors.push(`${pathName}.${required} is required.`);
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (properties[key]) errors.push(...validateSchemaValue(item, properties[key], `${pathName}.${key}`));
+      else if (schema.additionalProperties === false) errors.push(`${pathName}.${key} is not supported.`);
+    }
+  }
+  return errors;
+}
+
+async function executeDeferredCapability(args, destructive) {
+  const capabilityId = requireString(args.capability, "capability");
+  const capability = CAPABILITY_BY_ID.get(capabilityId);
+  if (!capability) {
+    return { ok: false, error_kind: "capability_not_found", error: `Unknown capability: ${capabilityId}` };
+  }
+  if (capability.destructive !== destructive) {
+    return {
+      ok: false,
+      error_kind: "wrong_capability_executor",
+      error: capability.destructive
+        ? "Use openreel_execute_destructive_capability after explicit user authorization."
+        : "Use openreel_execute_capability for this non-destructive capability.",
+    };
+  }
+  if (destructive && args.confirm !== true) {
+    return { ok: false, error_kind: "confirmation_required", error: "confirm must be true after explicit user authorization." };
+  }
+  const expectedRef = capabilitySchemaRef(capability);
+  if (args.schema_ref !== expectedRef) {
+    return {
+      ok: false,
+      error_kind: "capability_description_required",
+      error: "Call openreel_describe_capability and pass its current schema_ref before execution.",
+      capability: capability.id,
+    };
+  }
+  const capabilityArgs = args.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)
+    ? args.arguments
+    : {};
+  const validationErrors = validateSchemaValue(capabilityArgs, capabilityInputSchema(capability));
+  if (validationErrors.length) {
+    return {
+      ok: false,
+      error_kind: "capability_arguments_invalid",
+      error: "Capability arguments do not match the described schema.",
+      validation_errors: validationErrors.slice(0, 20),
+      capability: capability.id,
+      schema_ref: expectedRef,
+    };
+  }
+  const handler = HANDLERS[capability.handler];
+  if (!handler) throw new Error(`Capability handler is missing: ${capability.handler}`);
+  return handler({
+    ...capabilityArgs,
+    project_id: requireString(args.project_id, "project_id"),
+    ...(destructive ? { confirm: true } : {}),
+  });
+}
 
 function requireString(value, name) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -1098,6 +1534,65 @@ const HANDLERS = {
   async openreel_get_canvas(args) {
     const projectId = encodeSegment(args.project_id, "project_id");
     return requestOpenReel(`/api/projects/${projectId}/nodes`);
+  },
+
+  async openreel_search_capabilities(args) {
+    const query = requireString(args.query, "query");
+    const limit = boundedNumber(args.limit, 6, 1, 10);
+    const matches = CAPABILITY_CATALOG
+      .map((capability) => ({ capability, score: capabilitySearchScore(capability, query) }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score || left.capability.id.localeCompare(right.capability.id))
+      .slice(0, limit)
+      .map(({ capability }) => ({
+        capability: capability.id,
+        title: capability.title,
+        summary: capability.summary,
+        destructive: capability.destructive,
+        next: "Call openreel_describe_capability with this exact capability id.",
+      }));
+    return {
+      ok: true,
+      query,
+      matches,
+      total: matches.length,
+      catalog_version: CAPABILITY_CATALOG_VERSION,
+    };
+  },
+
+  async openreel_describe_capability(args) {
+    const capabilityId = requireString(args.capability, "capability");
+    const capability = CAPABILITY_BY_ID.get(capabilityId);
+    if (!capability) {
+      return {
+        ok: false,
+        error_kind: "capability_not_found",
+        error: `Unknown capability: ${capabilityId}`,
+        hint: "Use openreel_search_capabilities to discover a current capability id.",
+      };
+    }
+    return {
+      ok: true,
+      capability: capability.id,
+      title: capability.title,
+      summary: capability.summary,
+      usage: capability.usage,
+      destructive: capability.destructive,
+      executor: capability.destructive
+        ? "openreel_execute_destructive_capability"
+        : "openreel_execute_capability",
+      schema_ref: capabilitySchemaRef(capability),
+      input_schema: capabilityInputSchema(capability),
+      catalog_version: CAPABILITY_CATALOG_VERSION,
+    };
+  },
+
+  async openreel_execute_capability(args) {
+    return executeDeferredCapability(args, false);
+  },
+
+  async openreel_execute_destructive_capability(args) {
+    return executeDeferredCapability(args, true);
   },
 
   async openreel_apply_canvas_patch(args) {
@@ -1562,7 +2057,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex is the OpenReel orchestrator. Read the canvas first, use the typed canvas patch for non-destructive edits, and keep deletion/restoration in the confirmed destructive tool. Never call or delegate to OpenReel /api/chat or its agent loop. Use references for creative dependencies and require explicit user authorization for destructive tools.",
+        "Codex is the OpenReel orchestrator. Read the canvas, then discover deferred operations with openreel_search_capabilities → openreel_describe_capability → the returned executor. Exact schemas load only on describe and schema_ref is required for execution. Never call OpenReel /api/chat. Use references for creative dependencies and explicit authorization for destructive capabilities.",
     });
     return;
   }

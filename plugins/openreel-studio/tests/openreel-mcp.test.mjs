@@ -52,7 +52,7 @@ async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   };
 }
 
-test("tool surface exposes only the compact canvas control profile", async () => {
+test("tool surface exposes only deferred discovery and execution primitives", async () => {
   const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
   const bridge = startBridge(fake.baseUrl);
   try {
@@ -64,20 +64,166 @@ test("tool surface exposes only the compact canvas control profile", async () =>
       "openreel_connection_info",
       "openreel_list_projects",
       "openreel_get_canvas",
-      "openreel_describe_node_contract",
-      "openreel_apply_canvas_patch",
-      "openreel_delete_canvas_items",
-      "openreel_run_nodes",
-      "openreel_upload_node_media",
+      "openreel_search_capabilities",
+      "openreel_describe_capability",
+      "openreel_execute_capability",
+      "openreel_execute_destructive_capability",
     ]));
-    assert.equal(names.length, 8);
-    assert.ok(JSON.stringify(response.result.tools).length < 18_000, "public tool schema budget exceeded");
+    assert.equal(names.length, 7);
+    assert.ok(JSON.stringify(response.result.tools).length < 10_000, "public tool schema budget exceeded");
+
+    const search = await bridge.call("tools/call", {
+      name: "openreel_search_capabilities",
+      arguments: { query: "移动节点" },
+    });
+    const match = search.result.structuredContent.matches.find((item) => item.capability === "node.move");
+    assert.equal(match.capability, "node.move");
+    assert.equal(match.input_schema, undefined);
+
+    const described = await bridge.call("tools/call", {
+      name: "openreel_describe_capability",
+      arguments: { capability: "node.move" },
+    });
+    assert.equal(described.result.structuredContent.executor, "openreel_execute_capability");
+    assert.equal(JSON.stringify(described.result.structuredContent.input_schema).includes("project_id"), false);
+    assert.match(described.result.structuredContent.schema_ref, /node\.move:[a-f0-9]{12}$/);
+
+    const staleSchema = await bridge.call("tools/call", {
+      name: "openreel_execute_capability",
+      arguments: {
+        project_id: "project-1",
+        capability: "node.move",
+        schema_ref: "stale",
+        arguments: { node_id: "#1", x: 10, y: 20 },
+      },
+    });
+    assert.equal(staleSchema.result.isError, true);
+    assert.equal(staleSchema.result.structuredContent.error_kind, "capability_description_required");
+
+    const invalidArguments = await bridge.call("tools/call", {
+      name: "openreel_execute_capability",
+      arguments: {
+        project_id: "project-1",
+        capability: "node.move",
+        schema_ref: described.result.structuredContent.schema_ref,
+        arguments: { node_id: "#1", x: "ten", y: 20 },
+      },
+    });
+    assert.equal(invalidArguments.result.isError, true);
+    assert.equal(invalidArguments.result.structuredContent.error_kind, "capability_arguments_invalid");
+
+    const destructive = await bridge.call("tools/call", {
+      name: "openreel_describe_capability",
+      arguments: { capability: "node.delete" },
+    });
+    assert.equal(destructive.result.structuredContent.destructive, true);
+    assert.equal(destructive.result.structuredContent.executor, "openreel_execute_destructive_capability");
+    assert.equal(destructive.result.structuredContent.input_schema.properties.confirm, undefined);
+    const wrongExecutor = await bridge.call("tools/call", {
+      name: "openreel_execute_capability",
+      arguments: {
+        project_id: "project-1",
+        capability: "node.delete",
+        schema_ref: destructive.result.structuredContent.schema_ref,
+        arguments: { node_ids: ["#1"] },
+      },
+    });
+    assert.equal(wrongExecutor.result.isError, true);
+    assert.equal(wrongExecutor.result.structuredContent.error_kind, "wrong_capability_executor");
+
+    const createDescription = await bridge.call("tools/call", {
+      name: "openreel_describe_capability",
+      arguments: { capability: "node.create" },
+    });
+    assert.equal(Array.isArray(createDescription.result.structuredContent.input_schema.oneOf), true);
+    const missingNodeType = await bridge.call("tools/call", {
+      name: "openreel_execute_capability",
+      arguments: {
+        project_id: "project-1",
+        capability: "node.create",
+        schema_ref: createDescription.result.structuredContent.schema_ref,
+        arguments: { fields: { prompt: "missing type" } },
+      },
+    });
+    assert.equal(missingNodeType.result.isError, true);
+    assert.equal(missingNodeType.result.structuredContent.error_kind, "capability_arguments_invalid");
 
     const hiddenCall = await bridge.call("tools/call", {
       name: "openreel_create_nodes",
       arguments: { project_id: "project-1", type: "text", fields: { content: "hidden" } },
     });
     assert.match(hiddenCall.error.message, /Unknown or private tool/);
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("common canvas intents discover their deferred capabilities without schemas", async () => {
+  const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    for (const [query, expected] of [
+      ["创建图片节点", "node.create"],
+      ["删除连线", "edge.delete"],
+      ["运行视频", "node.run"],
+      ["上传素材", "node.media.upload"],
+      ["恢复画布快照", "canvas.snapshot.restore"],
+    ]) {
+      const response = await bridge.call("tools/call", {
+        name: "openreel_search_capabilities",
+        arguments: { query, limit: 10 },
+      });
+      assert.equal(response.result.structuredContent.matches.some((item) => item.capability === expected), true, query);
+      assert.equal(response.result.structuredContent.matches.some((item) => item.input_schema), false, query);
+    }
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("every registered canvas capability is searchable and describable on demand", async () => {
+  const fake = await startFakeOpenReel(() => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }));
+  const bridge = startBridge(fake.baseUrl);
+  const capabilities = [
+    "node.contract.describe",
+    "node.list",
+    "node.get",
+    "node.create",
+    "node.duplicate",
+    "node.update",
+    "node.move",
+    "edge.create",
+    "edge.update",
+    "node.history.switch",
+    "canvas.patch",
+    "node.run",
+    "node.run_many",
+    "node.wait",
+    "node.media.upload",
+    "node.delete",
+    "edge.delete",
+    "canvas.snapshot.restore",
+    "canvas.destructive_batch",
+  ];
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    for (const capability of capabilities) {
+      const search = await bridge.call("tools/call", {
+        name: "openreel_search_capabilities",
+        arguments: { query: capability, limit: 1 },
+      });
+      assert.equal(search.result.structuredContent.matches[0].capability, capability);
+      const described = await bridge.call("tools/call", {
+        name: "openreel_describe_capability",
+        arguments: { capability },
+      });
+      assert.equal(described.result.structuredContent.ok, true);
+      assert.equal(typeof described.result.structuredContent.input_schema, "object");
+      assert.match(described.result.structuredContent.schema_ref, new RegExp(`${capability.replaceAll(".", "\\.")}:[a-f0-9]{12}$`));
+    }
   } finally {
     await bridge.close();
     await fake.close();
@@ -116,6 +262,29 @@ function startBridge(baseUrl) {
   };
 }
 
+async function describeCapability(bridge, capability) {
+  const response = await bridge.call("tools/call", {
+    name: "openreel_describe_capability",
+    arguments: { capability },
+  });
+  assert.equal(response.result.structuredContent.ok, true);
+  return response.result.structuredContent;
+}
+
+async function executeCapability(bridge, capability, args, { destructive = false } = {}) {
+  const described = await describeCapability(bridge, capability);
+  return bridge.call("tools/call", {
+    name: destructive ? "openreel_execute_destructive_capability" : "openreel_execute_capability",
+    arguments: {
+      project_id: "project-1",
+      capability,
+      schema_ref: described.schema_ref,
+      arguments: args,
+      ...(destructive ? { confirm: true } : {}),
+    },
+  });
+}
+
 test("node creation uses normalized dynamic contract fields", async () => {
   const fake = await startFakeOpenReel((request) => ({
     ok: true,
@@ -132,12 +301,9 @@ test("node creation uses normalized dynamic contract fields", async () => {
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await bridge.call("tools/call", {
-      name: "openreel_apply_canvas_patch",
-      arguments: {
-        project_id: "project-1",
-        operations: [{ op: "create_node", type: "image", fields: { prompt: "product photo" } }],
-      },
+    const response = await executeCapability(bridge, "node.create", {
+      type: "image",
+      fields: { prompt: "product photo" },
     });
 
     assert.equal(response.result.structuredContent.ok, true);
@@ -168,18 +334,14 @@ test("invalid contract blocks node.create before any write", async () => {
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await bridge.call("tools/call", {
-      name: "openreel_apply_canvas_patch",
-      arguments: {
-        project_id: "project-1",
-        operations: [{ op: "create_node", type: "image", fields: { prompt: "product photo" } }],
-      },
+    const response = await executeCapability(bridge, "node.create", {
+      type: "image",
+      fields: { prompt: "product photo" },
     });
 
     assert.equal(response.result.isError, true);
-    const failure = response.result.structuredContent.results[0].result;
-    assert.equal(failure.error_kind, "node_contract_failed");
-    assert.equal(failure.contract.errors[0].field, "resolution");
+    assert.equal(response.result.structuredContent.error_kind, "node_contract_failed");
+    assert.equal(response.result.structuredContent.contract.errors[0].field, "resolution");
     assert.equal(fake.calls.length, 0);
   } finally {
     await bridge.close();
@@ -212,15 +374,11 @@ test("run preflight blocks provider execution and keeps the existing node", asyn
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await bridge.call("tools/call", {
-      name: "openreel_run_nodes",
-      arguments: { project_id: "project-1", runs: [{ node_id: "#7" }] },
-    });
+    const response = await executeCapability(bridge, "node.run", { node_id: "#7" });
 
     assert.equal(response.result.isError, true);
-    const failure = response.result.structuredContent.results[0].result;
-    assert.equal(failure.error_kind, "node_run_preflight_failed");
-    assert.equal(failure.node_id, "#7");
+    assert.equal(response.result.structuredContent.error_kind, "node_run_preflight_failed");
+    assert.equal(response.result.structuredContent.node_id, "#7");
     assert.deepEqual(fake.calls.map((item) => item.tool), ["node.get"]);
   } finally {
     await bridge.close();
@@ -251,31 +409,22 @@ test("persistent canvas layout, edge, history, and snapshot operations use atomi
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const patchResponse = await bridge.call("tools/call", {
-      name: "openreel_apply_canvas_patch",
-      arguments: {
-        project_id: "project-1",
-        operations: [
-          { op: "move_node", node_id: "#1", x: 120, y: 80 },
-          { op: "move_node", node_id: "#2", x: 520, y: 80 },
-          { op: "update_edge", edge_id: "edge-1", label: "visual reference" },
-          { op: "switch_node_history", node_id: "#2", history_id: "history-1" },
-        ],
-      },
+    const patchResponse = await executeCapability(bridge, "canvas.patch", {
+      operations: [
+        { op: "move_node", node_id: "#1", x: 120, y: 80 },
+        { op: "move_node", node_id: "#2", x: 520, y: 80 },
+        { op: "update_edge", edge_id: "edge-1", label: "visual reference" },
+        { op: "switch_node_history", node_id: "#2", history_id: "history-1" },
+      ],
     });
     assert.equal(patchResponse.result.structuredContent.ok, true);
-    const destructiveResponse = await bridge.call("tools/call", {
-      name: "openreel_delete_canvas_items",
-      arguments: {
-        project_id: "project-1",
-        edge_ids: ["edge-2"],
-        restore_snapshot: {
-          nodes: [{ id: "restored-1", type: "text", title: "Restored" }],
-          edges: [],
-        },
-        confirm: true,
+    const destructiveResponse = await executeCapability(bridge, "canvas.destructive_batch", {
+      edge_ids: ["edge-2"],
+      restore_snapshot: {
+        nodes: [{ id: "restored-1", type: "text", title: "Restored" }],
+        edges: [],
       },
-    });
+    }, { destructive: true });
     assert.equal(destructiveResponse.result.structuredContent.ok, true);
 
     assert.deepEqual(
@@ -341,12 +490,10 @@ test("node duplication keeps creative fields, drops generated upload state, and 
   const bridge = startBridge(fake.baseUrl);
   try {
     await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
-    const response = await bridge.call("tools/call", {
-      name: "openreel_apply_canvas_patch",
-      arguments: {
-        project_id: "project-1",
-        operations: [{ op: "duplicate_node", node_id: "#3", offset_x: 60, offset_y: 40 }],
-      },
+    const response = await executeCapability(bridge, "node.duplicate", {
+      node_ids: ["#3"],
+      offset_x: 60,
+      offset_y: 40,
     });
 
     assert.equal(response.result.structuredContent.ok, true);
