@@ -1,0 +1,34 @@
+{
+  "name": "openreel-studio",
+  "version": "0.1.0+codex.20260720031958",
+  "description": "Optionally let Codex directly operate OpenReel Studio projects, canvas nodes, media, and runs without replacing OpenReel's default agent.",
+  "author": {
+    "name": "OpenReel Studio"
+  },
+  "keywords": [
+    "openreel",
+    "video",
+    "canvas",
+    "workflow",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "OpenReel Studio",
+    "shortDescription": "Optionally control the OpenReel canvas with Codex.",
+    "longDescription": "An opt-in connection for a running OpenReel desktop, source, Docker, or remote installation. When the user explicitly selects it, Codex directly reads and changes projects, nodes, edges, media, and node runs through OpenReel's atomic API. Installing the plugin does not replace or disable OpenReel's default chat agent.",
+    "developerName": "OpenReel Studio",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "brandColor": "#6366F1",
+    "defaultPrompt": [
+      "\u8fde\u63a5\u672c\u673a OpenReel\uff0c\u5217\u51fa\u9879\u76ee\u5e76\u6982\u89c8\u5f53\u524d\u753b\u5e03\u3002",
+      "\u5728 OpenReel \u65b0\u5efa\u4e00\u4e2a\u9879\u76ee\uff0c\u5e76\u76f4\u63a5\u642d\u5efa\u56fe\u7247\u5230\u89c6\u9891\u7684\u8282\u70b9\u6d41\u7a0b\u3002",
+      "\u68c0\u67e5 OpenReel \u5f53\u524d\u753b\u5e03\u7684\u5931\u8d25\u8282\u70b9\uff0c\u4fee\u6b63\u540e\u7ee7\u7eed\u8fd0\u884c\u3002"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

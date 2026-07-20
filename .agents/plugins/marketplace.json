@@ -1,0 +1,20 @@
+{
+  "name": "openreel-codex",
+  "interface": {
+    "displayName": "OpenReel Codex"
+  },
+  "plugins": [
+    {
+      "name": "openreel-studio",
+      "source": {
+        "source": "local",
+        "path": "./plugins/openreel-studio"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

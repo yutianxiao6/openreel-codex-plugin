@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "openreel-studio": {
+      "command": "node",
+      "args": [
+        "./scripts/openreel-mcp.mjs",
+        "--stdio"
+      ],
+      "cwd": ".",
+      "tool_timeout_sec": 1200
+    }
+  }
+}
