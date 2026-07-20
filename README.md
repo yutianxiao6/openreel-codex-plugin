@@ -19,9 +19,9 @@ codex plugin add openreel-studio@openreel-codex
 
 启动 OpenReel Studio，然后在 Codex 中明确要求连接，例如：
 
-> 连接本机 OpenReel，列出项目并概览当前画布。
+> 连接本机 OpenReel，列出项目，切换到“产品演示”，然后概览画布。
 
-桌面版和本地源码版会通过受验证的本机端口自动发现。Docker 或远程部署首次连接时设置地址及可选认证；验证成功后会保存到当前用户的私有配置文件，后续新会话无需重复输入。完整路径、安全边界和清除方式见 [插件文档](plugins/openreel-studio/README.md)。
+桌面版和本地源码版会通过受验证的本机端口自动发现。Docker 或远程部署首次连接时设置地址及可选认证；验证成功后会保存到当前用户的私有配置文件，后续新会话无需重复输入。项目可以在同一 Codex 会话中显式切换，新建项目会自动成为当前操作目标。完整路径、安全边界和项目选择规则见 [插件文档](plugins/openreel-studio/README.md)。
 
 ## 仓库结构
 

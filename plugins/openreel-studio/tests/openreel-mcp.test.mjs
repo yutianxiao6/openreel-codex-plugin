@@ -200,6 +200,7 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
     assert.deepEqual(new Set(names), new Set([
       "openreel_connection_info",
       "openreel_list_projects",
+      "openreel_select_project",
       "openreel_create_project",
       "openreel_get_project",
       "openreel_update_project",
@@ -220,8 +221,29 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
       "openreel_execute_capability",
       "openreel_execute_destructive_capability",
     ]));
-    assert.equal(names.length, 21);
+    assert.equal(names.length, 22);
     assert.ok(JSON.stringify(response.result.tools).length < 30_000, "public tool schema budget exceeded");
+    for (const name of [
+      "openreel_get_project",
+      "openreel_update_project",
+      "openreel_delete_project",
+      "openreel_get_canvas",
+      "openreel_get_nodes",
+      "openreel_create_nodes",
+      "openreel_update_nodes",
+      "openreel_move_nodes",
+      "openreel_delete_nodes",
+      "openreel_connect_nodes",
+      "openreel_update_edges",
+      "openreel_delete_edges",
+      "openreel_run_node",
+      "openreel_upload_node_media",
+      "openreel_execute_capability",
+      "openreel_execute_destructive_capability",
+    ]) {
+      const tool = response.result.tools.find((item) => item.name === name);
+      assert.equal(tool.inputSchema.required.includes("project_id"), false, `${name} still requires project_id`);
+    }
 
     const search = await bridge.call("tools/call", {
       name: "openreel_search_capabilities",
@@ -424,6 +446,106 @@ test("project CRUD including confirmed deletion is directly available", async ()
     assert.equal(restCalls.filter((item) => item.method === "DELETE").length, 1);
   } finally {
     await bridge.close();
+    await fake.close();
+  }
+});
+
+test("project selection switches session scope, rejects cross-project writes, and follows new projects", async () => {
+  const projects = [
+    { id: "project-1", title: "Project One" },
+    { id: "project-2", title: "Project Two" },
+    { id: "duplicate-1", title: "Duplicate" },
+    { id: "duplicate-2", title: "Duplicate" },
+  ];
+  const restCalls = [];
+  const fake = await startFakeOpenReel(
+    () => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }),
+    undefined,
+    ({ method, url, body }) => {
+      restCalls.push({ method, url, body });
+      if (method === "GET" && url === "/api/projects?compact=true") return projects;
+      if (method === "GET" && url === "/api/projects/project-1") return projects[0];
+      if (method === "GET" && url === "/api/projects/project-2") return projects[1];
+      if (method === "GET" && url === "/api/projects/project-1/nodes") return { project: "project-1", nodes: [], edges: [] };
+      if (method === "GET" && url === "/api/projects/project-2/nodes") return { project: "project-2", nodes: [], edges: [] };
+      if (method === "POST" && url === "/api/projects") {
+        const created = { id: "project-3", ...body };
+        projects.push(created);
+        return created;
+      }
+      return undefined;
+    },
+  );
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    const initialList = await bridge.call("tools/call", {
+      name: "openreel_list_projects",
+      arguments: {},
+    });
+    assert.equal(initialList.result.structuredContent.items.every((project) => project._codex_selected === false), true);
+
+    const selectedOne = await bridge.call("tools/call", {
+      name: "openreel_select_project",
+      arguments: { title: "Project One" },
+    });
+    assert.equal(selectedOne.result.structuredContent.selected_project.id, "project-1");
+    assert.equal(selectedOne.result.structuredContent.changed, true);
+
+    const firstCanvas = await bridge.call("tools/call", {
+      name: "openreel_get_canvas",
+      arguments: {},
+    });
+    assert.equal(firstCanvas.result.structuredContent.project, "project-1");
+
+    const crossProject = await bridge.call("tools/call", {
+      name: "openreel_get_canvas",
+      arguments: { project_id: "project-2" },
+    });
+    assert.equal(crossProject.result.isError, true);
+    assert.match(crossProject.result.structuredContent.error, /openreel_select_project/);
+    assert.equal(restCalls.some((item) => item.url === "/api/projects/project-2/nodes"), false);
+
+    const duplicateTitle = await bridge.call("tools/call", {
+      name: "openreel_select_project",
+      arguments: { title: "Duplicate" },
+    });
+    assert.equal(duplicateTitle.result.isError, true);
+    assert.match(duplicateTitle.result.structuredContent.error, /project_id/);
+
+    const selectedTwo = await bridge.call("tools/call", {
+      name: "openreel_select_project",
+      arguments: { project_id: "project-2" },
+    });
+    assert.equal(selectedTwo.result.structuredContent.selected_project.id, "project-2");
+    const secondCanvas = await bridge.call("tools/call", { name: "openreel_get_canvas", arguments: {} });
+    assert.equal(secondCanvas.result.structuredContent.project, "project-2");
+
+    const created = await bridge.call("tools/call", {
+      name: "openreel_create_project",
+      arguments: { title: "Project Three" },
+    });
+    assert.equal(created.result.structuredContent.id, "project-3");
+    assert.equal(created.result.structuredContent._codex_selected, true);
+    const connection = await bridge.call("tools/call", {
+      name: "openreel_connection_info",
+      arguments: {},
+    });
+    assert.equal(connection.result.structuredContent.selected_project.id, "project-3");
+  } finally {
+    await bridge.close();
+  }
+
+  const newSession = startBridge(fake.baseUrl);
+  try {
+    await newSession.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    const connection = await newSession.call("tools/call", {
+      name: "openreel_connection_info",
+      arguments: {},
+    });
+    assert.equal(connection.result.structuredContent.selected_project, null);
+  } finally {
+    await newSession.close();
     await fake.close();
   }
 });
