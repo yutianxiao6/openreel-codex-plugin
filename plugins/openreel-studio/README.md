@@ -99,7 +99,7 @@ node scripts/openreel-mcp.mjs --check
 用户要求 Codex 生成图片且未指定 OpenReel provider 时，默认调用链为：
 
 1. Codex 内置图片生成创建最终本地文件。
-2. `openreel_publish_generated_image` 创建完整图片节点并保存成品。
+2. `openreel_publish_generated_image` 调用通用外部图片导入接口，声明 `generation_backend=codex_builtin`，创建完整图片节点并保存成品。
 
 单张图片对应 1 次图片生成和 1 次插件发布。新版 OpenReel 使用一次导入请求完成节点创建、媒体保存和完整节点事件；兼容路径复用同一个生成文件完成节点上传。用户明确选择 OpenReel 图片模型时，Codex 读取当前动态节点合同，再执行节点创建和运行。详细审计见 [`docs/image-generation-call-analysis.md`](docs/image-generation-call-analysis.md)。
 

@@ -7,8 +7,9 @@
 1. 当前 Codex 会话首次操作 OpenReel 时完成连接和项目选择，后续图片复用该状态。
 2. Codex 内置图片生成执行 1 次并产出最终本地文件。
 3. `openreel_publish_generated_image` 执行 1 次。
-4. 新版 OpenReel 使用 1 个 multipart 请求完成节点创建、图片保存、产物登记和完整节点事件广播。
-5. 发布结果中的 completed 节点作为本次操作的持久化验证。
+4. 新版 OpenReel 使用 1 个 multipart 请求调用通用外部图片导入接口，并由插件声明 `generation_backend=codex_builtin`。
+5. OpenReel 完成节点创建、图片保存、产物登记和完整节点事件广播。
+6. 发布结果中的 completed 节点作为本次操作的持久化验证。
 
 ## 六个维度
 

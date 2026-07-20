@@ -2268,6 +2268,8 @@ const HANDLERS = {
       const form = new FormData();
       form.append("file", await openAsBlob(local.filePath, { type: local.mimeType }), path.basename(local.filePath));
       form.append("title", title);
+      form.append("generation_backend", "codex_builtin");
+      form.append("creator", "agent");
       if (prompt) form.append("prompt", prompt);
       if (args.position) {
         form.append("x", String(args.position.x));
