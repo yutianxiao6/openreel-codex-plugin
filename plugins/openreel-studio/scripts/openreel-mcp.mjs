@@ -32,6 +32,7 @@ let storedConnectionConfig = null;
 let storedConnectionConfigLoaded = false;
 let storedConnectionConfigError = null;
 let selectedProject = null;
+let atomicImageImportSupported = null;
 
 function objectSchema(properties, required = []) {
   return {
@@ -487,6 +488,23 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
+    name: "openreel_publish_generated_image",
+    title: "Publish Codex-Generated Image to OpenReel",
+    description:
+      "Create a completed OpenReel image node from one local image produced by Codex's built-in image generator. Prefer this after image_gen unless the user explicitly requests an OpenReel-configured provider.",
+    inputSchema: objectSchema(
+      {
+        project_id: stringField("Optional project UUID; defaults to the selected project."),
+        file_path: stringField("Absolute local path returned by Codex image generation."),
+        title: stringField("User-visible image node title."),
+        prompt: stringField("The final prompt used to generate the image."),
+        position: positionSchema("Optional preferred canvas position; OpenReel avoids overlap."),
+      },
+      ["file_path", "title"],
+    ),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
     name: "openreel_upload_node_media",
     title: "Upload Media to OpenReel Node",
     description: "Upload a local image or video file as the completed output of an existing matching node.",
@@ -722,6 +740,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   "openreel_update_edges",
   "openreel_delete_edges",
   "openreel_run_node",
+  "openreel_publish_generated_image",
   "openreel_upload_node_media",
   "openreel_search_capabilities",
   "openreel_describe_capability",
@@ -743,6 +762,7 @@ const PROJECT_SCOPED_TOOL_NAMES = new Set([
   "openreel_update_edges",
   "openreel_delete_edges",
   "openreel_run_node",
+  "openreel_publish_generated_image",
   "openreel_upload_node_media",
   "openreel_execute_capability",
   "openreel_execute_destructive_capability",
@@ -1185,6 +1205,7 @@ async function forgetConnectionConfig() {
   storedConnectionConfigLoaded = true;
   storedConnectionConfigError = null;
   selectedProject = null;
+  atomicImageImportSupported = null;
   return { ok: true, removed, config_path: configPath };
 }
 
@@ -1278,7 +1299,10 @@ async function probeOpenReel(baseUrl, profile) {
 }
 
 async function discoverConnection({ refresh = false } = {}) {
-  if (refresh) cachedConnection = null;
+  if (refresh) {
+    cachedConnection = null;
+    atomicImageImportSupported = null;
+  }
   if (cachedConnection) return cachedConnection;
 
   const profile = await resolveConnectionProfile();
@@ -1366,6 +1390,47 @@ async function requestOpenReel(apiPath, options = {}) {
     throw new Error(`OpenReel ${options.method ?? "GET"} ${apiPath} failed (${response.status}): ${errorPreview(payload)}`);
   }
   return payload;
+}
+
+function unsupportedAtomicImageImport(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /failed \((404|405)\)/.test(message);
+}
+
+async function localMediaFile(filePath, expectedKind = null) {
+  const resolvedPath = path.resolve(requireString(filePath, "file_path"));
+  const fileStat = await stat(resolvedPath);
+  if (!fileStat.isFile()) throw new Error("file_path must point to a regular file.");
+  const mimeType = mimeTypeFor(resolvedPath);
+  if (expectedKind === "image" && !mimeType.startsWith("image/")) {
+    throw new Error("file_path must point to an image file supported by OpenReel.");
+  }
+  return { filePath: resolvedPath, mimeType };
+}
+
+async function uploadLocalNodeMedia(projectId, nodeId, filePath, { resolveNode = true } = {}) {
+  const local = await localMediaFile(filePath);
+  const internalId = resolveNode ? await resolveInternalNodeId(projectId, nodeId) : requireString(nodeId, "node_id");
+  const blob = await openAsBlob(local.filePath, { type: local.mimeType });
+  const form = new FormData();
+  form.append("file", blob, path.basename(local.filePath));
+  return requestOpenReel(
+    `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/media`,
+    { method: "POST", body: form },
+  );
+}
+
+function publishedImageResult(result, transport) {
+  return {
+    ok: result?.ok !== false,
+    generation_backend: "codex_builtin",
+    transport,
+    node_id: result?.id ?? result?._canvas_id ?? result?._canvas_node_id,
+    title: result?.title,
+    status: result?.status,
+    position: result?.position,
+    media: result?.uploaded_media ?? result?.output,
+  };
 }
 
 async function callOpenReelTool(tool, args) {
@@ -1468,6 +1533,9 @@ async function preflightExistingNode(args) {
 
 async function resolveInternalNodeId(projectId, nodeId) {
   const requested = requireString(nodeId, "node_id");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requested)) {
+    return requested;
+  }
   const result = await callOpenReelTool("node.get", {
     project_id: requireString(projectId, "project_id"),
     node_id: requested,
@@ -2190,19 +2258,64 @@ const HANDLERS = {
     return waitForNode(args);
   },
 
-  async openreel_upload_node_media(args) {
-    const filePath = path.resolve(requireString(args.file_path, "file_path"));
-    const fileStat = await stat(filePath);
-    if (!fileStat.isFile()) throw new Error("file_path must point to a regular file.");
+  async openreel_publish_generated_image(args) {
     const projectId = requireString(args.project_id, "project_id");
-    const internalId = await resolveInternalNodeId(projectId, args.node_id);
-    const blob = await openAsBlob(filePath, { type: mimeTypeFor(filePath) });
-    const form = new FormData();
-    form.append("file", blob, path.basename(filePath));
-    return requestOpenReel(
-      `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/media`,
-      { method: "POST", body: form },
-    );
+    const title = requireString(args.title, "title");
+    const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+    const local = await localMediaFile(args.file_path, "image");
+
+    if (atomicImageImportSupported !== false) {
+      const form = new FormData();
+      form.append("file", await openAsBlob(local.filePath, { type: local.mimeType }), path.basename(local.filePath));
+      form.append("title", title);
+      if (prompt) form.append("prompt", prompt);
+      if (args.position) {
+        form.append("x", String(args.position.x));
+        form.append("y", String(args.position.y));
+      }
+      try {
+        const imported = await requestOpenReel(
+          `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/import-image`,
+          { method: "POST", body: form },
+        );
+        atomicImageImportSupported = true;
+        return publishedImageResult(imported, "atomic_import");
+      } catch (error) {
+        if (!unsupportedAtomicImageImport(error)) throw error;
+        atomicImageImportSupported = false;
+      }
+    }
+
+    const position = args.position && typeof args.position === "object" ? args.position : {};
+    const created = await requestOpenReel(`/api/projects/${encodeSegment(projectId, "project_id")}/nodes`, {
+      method: "POST",
+      json: {
+        type: "image",
+        title,
+        x: Number.isFinite(Number(position.x)) ? Number(position.x) : 120,
+        y: Number.isFinite(Number(position.y)) ? Number(position.y) : 90,
+      },
+    });
+    const nodeId = requireString(created?.id, "created node id");
+    try {
+      const uploaded = await uploadLocalNodeMedia(projectId, nodeId, local.filePath, { resolveNode: false });
+      return publishedImageResult(uploaded, "legacy_create_then_upload");
+    } catch (error) {
+      return {
+        ok: false,
+        error_kind: "generated_image_upload_failed",
+        error: error instanceof Error ? error.message : String(error),
+        node_id: nodeId,
+        retry_tool: "openreel_upload_node_media",
+        retry_arguments: { node_id: nodeId, file_path: local.filePath },
+        hint: "Retry the upload on this existing node. Do not regenerate the image or create another node.",
+      };
+    }
+  },
+
+  async openreel_upload_node_media(args) {
+    const projectId = requireString(args.project_id, "project_id");
+    return uploadLocalNodeMedia(projectId, args.node_id, args.file_path);
   },
 
   async openreel_get_model_config() {
@@ -2260,7 +2373,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex is the OpenReel orchestrator. Use the directly loaded project, node, edge, single-run, and upload tools for common work. Only unlisted complex or uncommon operations use openreel_search_capabilities → openreel_describe_capability → the returned executor. Never call OpenReel /api/chat. Use references for dependencies and explicit authorization for destructive actions.",
+        "Codex is the OpenReel orchestrator. For image creation, prefer Codex's built-in image_gen and then openreel_publish_generated_image; use OpenReel node.create + node.run only when the user explicitly selects an OpenReel-configured provider. Use the directly loaded project, node, edge, single-run, and upload tools for common work. Only unlisted complex or uncommon operations use openreel_search_capabilities → openreel_describe_capability → the returned executor. Never call OpenReel /api/chat. Use references for dependencies and explicit authorization for destructive actions.",
     });
     return;
   }

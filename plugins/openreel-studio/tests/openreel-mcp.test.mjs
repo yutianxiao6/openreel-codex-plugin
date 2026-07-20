@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -29,7 +29,11 @@ async function startFakeOpenReel(contractFactory, toolFactory, requestFactory) {
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
-    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null;
+    const rawBody = chunks.length ? Buffer.concat(chunks) : null;
+    const contentType = String(request.headers["content-type"] ?? "");
+    const body = rawBody && contentType.includes("application/json")
+      ? JSON.parse(rawBody.toString("utf8"))
+      : rawBody;
     requests.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("Content-Type", "application/json");
     if (request.url === "/api/health") {
@@ -215,13 +219,14 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
       "openreel_update_edges",
       "openreel_delete_edges",
       "openreel_run_node",
+      "openreel_publish_generated_image",
       "openreel_upload_node_media",
       "openreel_search_capabilities",
       "openreel_describe_capability",
       "openreel_execute_capability",
       "openreel_execute_destructive_capability",
     ]));
-    assert.equal(names.length, 22);
+    assert.equal(names.length, 23);
     assert.ok(JSON.stringify(response.result.tools).length < 30_000, "public tool schema budget exceeded");
     const createProject = response.result.tools.find((item) => item.name === "openreel_create_project");
     assert.deepEqual(Object.keys(createProject.inputSchema.properties), ["title"]);
@@ -231,6 +236,12 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
     assert.deepEqual(updateProject.inputSchema.required, ["title"]);
     const getProject = response.result.tools.find((item) => item.name === "openreel_get_project");
     assert.deepEqual(Object.keys(getProject.inputSchema.properties), ["project_id"]);
+    const publishImage = response.result.tools.find((item) => item.name === "openreel_publish_generated_image");
+    assert.deepEqual(
+      Object.keys(publishImage.inputSchema.properties),
+      ["project_id", "file_path", "title", "prompt", "position"],
+    );
+    assert.deepEqual(publishImage.inputSchema.required, ["file_path", "title"]);
     for (const name of [
       "openreel_get_project",
       "openreel_update_project",
@@ -245,6 +256,7 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
       "openreel_update_edges",
       "openreel_delete_edges",
       "openreel_run_node",
+      "openreel_publish_generated_image",
       "openreel_upload_node_media",
       "openreel_execute_capability",
       "openreel_execute_destructive_capability",
@@ -625,6 +637,122 @@ async function executeCapability(bridge, capability, args, { destructive = false
     },
   });
 }
+
+test("Codex-generated image publishing uses one OpenReel import request", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "openreel-codex-image-"));
+  const imagePath = path.join(directory, "codex-frame.png");
+  await writeFile(
+    imagePath,
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+  );
+  const fake = await startFakeOpenReel(
+    () => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }),
+    undefined,
+    ({ method, url, body }) => {
+      if (method === "POST" && url === "/api/projects/project-1/nodes/import-image") {
+        assert.ok(Buffer.isBuffer(body));
+        const multipart = body.toString("utf8");
+        assert.match(multipart, /codex-frame\.png/);
+        assert.match(multipart, /Codex Frame/);
+        return {
+          id: "image-1",
+          type: "image",
+          title: "Codex Frame",
+          status: "completed",
+          position: { x: 120, y: 90 },
+          uploaded_media: { kind: "image", url: "/media/codex-frame.png" },
+          generation_backend: "codex_builtin",
+        };
+      }
+      return undefined;
+    },
+  );
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_publish_generated_image",
+      arguments: {
+        project_id: "project-1",
+        file_path: imagePath,
+        title: "Codex Frame",
+        prompt: "cinematic frame",
+      },
+    });
+
+    assert.equal(response.result.structuredContent.ok, true);
+    assert.equal(response.result.structuredContent.generation_backend, "codex_builtin");
+    assert.equal(response.result.structuredContent.transport, "atomic_import");
+    assert.equal(response.result.structuredContent.node_id, "image-1");
+    assert.equal(fake.calls.length, 0, "publish must not call OpenReel registry or provider tools");
+    assert.deepEqual(
+      fake.requests.filter((item) => item.url !== "/api/health").map((item) => [item.method, item.url]),
+      [["POST", "/api/projects/project-1/nodes/import-image"]],
+    );
+  } finally {
+    await bridge.close();
+    await fake.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("generated image compatibility fallback is detected once and never calls a provider", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "openreel-codex-image-legacy-"));
+  const imagePath = path.join(directory, "legacy-frame.png");
+  await writeFile(
+    imagePath,
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+  );
+  let createdCount = 0;
+  const fake = await startFakeOpenReel(
+    () => ({ ok: true, ready: true, normalized_fields: {}, errors: [] }),
+    undefined,
+    ({ method, url, body }) => {
+      if (method === "POST" && url === "/api/projects/project-1/nodes") {
+        createdCount += 1;
+        return { id: `legacy-${createdCount}`, type: "image", title: body.title, status: "idle" };
+      }
+      if (method === "POST" && /^\/api\/projects\/project-1\/nodes\/legacy-\d+\/media$/.test(url)) {
+        return {
+          id: url.split("/").at(-2),
+          type: "image",
+          title: "Legacy Frame",
+          status: "completed",
+          uploaded_media: { kind: "image", url: "/media/legacy-frame.png" },
+        };
+      }
+      return undefined;
+    },
+  );
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-03-26", capabilities: {} });
+    for (let index = 0; index < 2; index += 1) {
+      const response = await bridge.call("tools/call", {
+        name: "openreel_publish_generated_image",
+        arguments: { project_id: "project-1", file_path: imagePath, title: "Legacy Frame" },
+      });
+      assert.equal(response.result.structuredContent.ok, true);
+      assert.equal(response.result.structuredContent.transport, "legacy_create_then_upload");
+    }
+
+    assert.equal(fake.calls.length, 0);
+    assert.deepEqual(
+      fake.requests.filter((item) => item.url !== "/api/health").map((item) => [item.method, item.url]),
+      [
+        ["POST", "/api/projects/project-1/nodes/import-image"],
+        ["POST", "/api/projects/project-1/nodes"],
+        ["POST", "/api/projects/project-1/nodes/legacy-1/media"],
+        ["POST", "/api/projects/project-1/nodes"],
+        ["POST", "/api/projects/project-1/nodes/legacy-2/media"],
+      ],
+    );
+  } finally {
+    await bridge.close();
+    await fake.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("node creation uses normalized dynamic contract fields", async () => {
   const fake = await startFakeOpenReel((request) => ({

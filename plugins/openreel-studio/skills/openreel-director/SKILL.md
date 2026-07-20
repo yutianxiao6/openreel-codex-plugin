@@ -31,7 +31,7 @@ This is an opt-in control mode. Installing the plugin does not replace OpenReel'
 3. Project-scoped tools default to the selected project. If an explicit `project_id` conflicts with it, switch first with `openreel_select_project`; the bridge rejects cross-project operations.
 4. Read `openreel_get_canvas` before changing an existing canvas. It returns the persisted nodes, their fields and positions, media history, and edges in one graph snapshot.
 5. Use the applicable Codex skill for production method and prompt guidance. OpenReel contributes runtime state and model contracts, not an additional skill layer.
-6. Use the directly loaded node tools for read/create/update/move/delete, the edge tools for connect/update/delete, `openreel_run_node` for a single run, and `openreel_upload_node_media` for local media.
+6. Use the directly loaded node tools for read/create/update/move/delete, the edge tools for connect/update/delete, `openreel_run_node` for a single run, `openreel_publish_generated_image` for a new Codex-generated image, and `openreel_upload_node_media` for media that belongs to an existing node.
 7. For an operation that has no direct tool, call `openreel_search_capabilities`. Search results are summaries only and intentionally omit parameter schemas.
 8. Call `openreel_describe_capability` for the selected uncommon capability, then call its returned executor with the exact `schema_ref` and schema-matching `arguments`.
 9. Read the changed node or canvas state and verify the persisted result. A provider accepting a job is not proof that media generation completed.
@@ -48,6 +48,14 @@ Search again when the uncommon operation changes. Do not route ordinary CRUD thr
 - Uploading media requires an existing matching image or video node; the upload becomes that node's completed output.
 
 ## Models and protocols
+
+### Image generation backend
+
+- When the user asks Codex to create an image on the OpenReel canvas and does not select a backend, use Codex's built-in `imagegen` skill and built-in image generation tool first. Generate one final file per requested image, then call `openreel_publish_generated_image` once with that local file, title, final prompt, and optional position.
+- `openreel_publish_generated_image` creates the image node and stores the generated bitmap as its completed output. Do not create an empty image node first, do not run an OpenReel image provider, and do not add a verification read after a successful publish result.
+- When the user explicitly chooses an OpenReel-configured image model/provider, use `openreel_create_nodes` followed by `openreel_run_node`. In that path, the dynamic OpenReel node contract remains authoritative.
+- Do not invoke both backends for one requested image unless the user asks for a comparison. If Codex built-in image generation is unavailable, report that boundary and ask before switching to an OpenReel provider.
+- If publishing fails after a compatibility fallback created a node, retry `openreel_upload_node_media` with the returned node id and same file. Do not regenerate the bitmap or create a duplicate node.
 
 - Search for and describe the dynamic node-contract capability before creating an unfamiliar media node. Treat its result as the authoritative merged view for the current project, provider, model profile, video mode, and candidate fields. Do not bypass a `ready=false` result.
 - For image nodes, use both `aspect_ratio` and the exact matching resolution returned or accepted by the current contract; do not assume a hardcoded size.

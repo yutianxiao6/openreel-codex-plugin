@@ -90,6 +90,7 @@ node --test tests/openreel-mcp.test.mjs
 - 节点基础操作：读取画布/节点，创建、更新、移动和确认后删除节点。
 - 依赖线基础操作：创建、更新和确认后删除依赖线。
 - 常用执行：运行单个节点、向已有节点上传本地图片或视频。
+- Codex 原生出图：默认先调用 Codex 内置图片生成，再用 `openreel_publish_generated_image` 一步创建完整图片节点并显示到画布；用户明确指定 OpenReel 模型时才走节点创建与运行。
 - 延迟发现入口：搜索、描述、执行普通能力、执行经确认的破坏性能力。
 
 项目、节点和依赖线 CRUD 不需要先搜索。其中项目删除要求 `confirm_title` 与当前项目标题完全一致；节点和依赖线删除要求明确授权及 `confirm=true`。
@@ -99,5 +100,7 @@ node --test tests/openreel-mcp.test.mjs
 其中批量画布 patch 支持通过 `client_ref` 和 `client:<ref>` 引用同一次调用中新建的节点，并在第一项失败时停止。
 
 创作流程、提示词方法和工作习惯由 Codex 自己的 skill 管理。插件不读取或暴露 OpenReel 内置 skill，只提供画布状态、动态节点合同和原子执行能力。
+
+单张图片的推荐调用链只有两次宿主工具调用：一次 Codex 内置图片生成、一次 `openreel_publish_generated_image`。新版 OpenReel 对后者只接收一次导入请求并广播一次完整节点事件；旧版服务自动回退到创建节点再上传，不会改用 OpenReel 图片模型。详细调用审计见 [`docs/image-generation-call-analysis.md`](docs/image-generation-call-analysis.md)。
 
 它不暴露 `/api/chat`，也没有“调用 OpenReel Agent”的通用工具；创作判断、步骤安排和失败修复由 Codex 完成。
