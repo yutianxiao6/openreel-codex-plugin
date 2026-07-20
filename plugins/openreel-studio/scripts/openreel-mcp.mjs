@@ -133,13 +133,10 @@ const TOOLS = [
   },
   {
     name: "openreel_get_project",
-    title: "Get OpenReel Project",
-    description: "Read a project. The large internal state is omitted unless include_state is true.",
+    title: "Get OpenReel Session",
+    description: "Read the selected OpenReel session id and name.",
     inputSchema: objectSchema(
-      {
-        project_id: stringField("Optional project UUID; defaults to the project selected for this Codex session."),
-        include_state: booleanField("Include project state_json for diagnostics.", false),
-      },
+      { project_id: stringField("Optional project UUID; defaults to the project selected for this Codex session.") },
       [],
     ),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -1551,11 +1548,12 @@ function omitUndefined(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
-function safeProject(project, includeState) {
-  if (!project || typeof project !== "object" || includeState) return project;
-  const result = { ...project };
-  delete result.state_json;
-  return result;
+function sessionProject(project) {
+  if (!project || typeof project !== "object") return project;
+  return {
+    id: project.id,
+    title: project.title,
+  };
 }
 
 function selectedProjectSummary() {
@@ -1621,7 +1619,7 @@ async function selectProject(args) {
     changed: previous?.id !== selected.id,
     previous_project: previous,
     selected_project: selected,
-    project: safeProject(project, false),
+    project: sessionProject(project),
   };
 }
 
@@ -1692,7 +1690,7 @@ const HANDLERS = {
       if (selected && typeof selected.title === "string") selectedProject.title = selected.title;
     }
     return projects.map((project) => ({
-      ...project,
+      ...sessionProject(project),
       _codex_selected: project?.id === selectedProject?.id,
     }));
   },
@@ -1712,7 +1710,7 @@ const HANDLERS = {
     const projectId = encodeSegment(args.project_id, "project_id");
     const project = await requestOpenReel(`/api/projects/${projectId}`);
     bindProject(project);
-    return safeProject(project, args.include_state === true);
+    return sessionProject(project);
   },
 
   async openreel_update_project(args) {

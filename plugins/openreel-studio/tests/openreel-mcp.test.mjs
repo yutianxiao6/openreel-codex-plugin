@@ -229,6 +229,8 @@ test("tool surface loads common CRUD directly and defers uncommon capabilities",
     const updateProject = response.result.tools.find((item) => item.name === "openreel_update_project");
     assert.deepEqual(Object.keys(updateProject.inputSchema.properties), ["project_id", "title"]);
     assert.deepEqual(updateProject.inputSchema.required, ["title"]);
+    const getProject = response.result.tools.find((item) => item.name === "openreel_get_project");
+    assert.deepEqual(Object.keys(getProject.inputSchema.properties), ["project_id"]);
     for (const name of [
       "openreel_get_project",
       "openreel_update_project",
@@ -408,9 +410,13 @@ test("project CRUD including confirmed deletion is directly available", async ()
     undefined,
     ({ method, url, body }) => {
       restCalls.push({ method, url, body });
-      if (method === "GET" && url === "/api/projects?compact=true") return [{ id: "project-1", title: "Project One" }];
+      if (method === "GET" && url === "/api/projects?compact=true") {
+        return [{ id: "project-1", title: "Project One", format: "16:9", episode_count: 12 }];
+      }
       if (method === "POST" && url === "/api/projects") return { id: "project-1", ...body };
-      if (method === "GET" && url === "/api/projects/project-1") return { id: "project-1", title: "Project One" };
+      if (method === "GET" && url === "/api/projects/project-1") {
+        return { id: "project-1", title: "Project One", format: "16:9", duration_per_episode: 90 };
+      }
       if (method === "PATCH" && url === "/api/projects/project-1") return { id: "project-1", ...body };
       if (method === "DELETE" && url === "/api/projects/project-1") return { ok: true, id: "project-1" };
       return undefined;
@@ -424,6 +430,7 @@ test("project CRUD including confirmed deletion is directly available", async ()
       arguments: {},
     });
     assert.equal(listed.result.structuredContent.items[0].id, "project-1");
+    assert.deepEqual(Object.keys(listed.result.structuredContent.items[0]).sort(), ["_codex_selected", "id", "title"]);
     const created = await bridge.call("tools/call", {
       name: "openreel_create_project",
       arguments: { title: "Project One" },
@@ -433,7 +440,7 @@ test("project CRUD including confirmed deletion is directly available", async ()
       name: "openreel_get_project",
       arguments: { project_id: "project-1" },
     });
-    assert.equal(read.result.structuredContent.title, "Project One");
+    assert.deepEqual(read.result.structuredContent, { id: "project-1", title: "Project One" });
     const updated = await bridge.call("tools/call", {
       name: "openreel_update_project",
       arguments: { project_id: "project-1", title: "Renamed Session" },

@@ -78,6 +78,7 @@ node --test tests/openreel-mcp.test.mjs
 3. 选择后，节点、依赖线、运行和项目修改工具可以省略 `project_id`，自动使用当前项目。
 4. 如果工具显式传入另一个项目 ID，插件会在请求 OpenReel 前拒绝操作，必须先显式切换。
 5. `openreel_create_project` 只填写会话名字，创建成功后会自动切换到新会话；`openreel_update_project` 只负责重命名，删除当前会话后会清空选择。
+6. 会话列表、读取和切换只向 Codex 返回会话 ID 与名字；旧项目的画幅、集数、时长和预算字段仅留在 OpenReel 内部兼容历史数据。
 
 这里切换的是 Codex 插件的操作目标。插件通过服务端 API 操作项目，不会强制改变某个已打开浏览器窗口当前显示的页面；用户可以在 OpenReel 左侧项目栏看到并切换到同一项目。
 
