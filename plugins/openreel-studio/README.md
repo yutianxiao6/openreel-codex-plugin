@@ -104,6 +104,18 @@ node scripts/openreel-mcp.mjs --check
 
 单张图片对应 1 次图片生成和 1 次插件发布。新版 OpenReel 使用一次导入请求完成节点创建、媒体保存和完整节点事件；兼容路径复用同一个生成文件完成节点上传。用户明确选择 OpenReel 图片模型时，Codex 读取当前动态节点合同，再执行节点创建和运行。详细审计见 [`docs/image-generation-call-analysis.md`](docs/image-generation-call-analysis.md)。
 
+## 视频生成路径
+
+视频统一走 OpenReel 动态节点合同：插件读取 `video` 节点支持的 Provider、模式、
+参考素材限制、时长、比例和分辨率，创建节点后调用 `node.run`。插件不拼装服务商
+请求、不上传上游素材、不轮询服务商任务，也不解析服务商响应；这些职责由
+OpenReel 调用 Universal Model Adapter 完成。
+
+插件默认最多等待 OpenReel 节点终态 20 分钟。等待超时只表示当前 Codex 调用没有
+等到终态，生成任务可能仍在后台运行；后续应继续等待同一个节点，不能自动再次
+调用运行接口，以免创建重复计费任务。OpenReel API 重启后的上游任务恢复也由
+OpenReel 持久化状态并重新接入 UMA 轮询，插件继续读取原节点即可。
+
 ## 安全边界
 
 - 项目删除需要用户明确授权，并提供与当前标题一致的 `confirm_title`。

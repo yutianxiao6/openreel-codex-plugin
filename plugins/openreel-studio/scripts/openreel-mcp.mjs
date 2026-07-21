@@ -12,6 +12,7 @@ const SERVER_VERSION = "0.1.0";
 const DEFAULT_PORT_SPEC = "7860-7920,8000-8020";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_NODE_WAIT_TIMEOUT_SECONDS = 20 * 60;
 const CONNECTION_CONFIG_VERSION = 1;
 const CONNECTION_ENV_NAMES = [
   "OPENREEL_BASE_URL",
@@ -466,7 +467,13 @@ const TOOLS = [
         extra_fields: objectField("Temporary fields applied to the current run."),
         hidden_extra_field_keys: stringArrayField("Temporary keys to remove from persisted output and response."),
         wait: booleanField("Poll the persisted node until it completes or fails.", true),
-        wait_timeout_seconds: { type: "integer", minimum: 1, maximum: 1200, description: "Polling timeout." },
+        wait_timeout_seconds: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1200,
+          default: DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
+          description: "How long to wait for OpenReel's persisted terminal node state. A timeout does not rerun generation.",
+        },
       },
       ["node_id"],
     ),
@@ -480,7 +487,13 @@ const TOOLS = [
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
         node_id: stringField("Node id or visible id."),
-        timeout_seconds: { type: "integer", minimum: 1, maximum: 1200, description: "Polling timeout." },
+        timeout_seconds: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1200,
+          default: DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
+          description: "How long to keep reading the existing OpenReel node; this never starts another generation.",
+        },
         poll_interval_seconds: { type: "number", minimum: 0.5, maximum: 10, description: "Polling interval." },
       },
       ["project_id", "node_id"],
@@ -523,18 +536,6 @@ const TOOLS = [
     title: "Get Masked OpenReel Model Configuration",
     description: "Read OpenReel's parsed model/provider configuration together with masked secret metadata.",
     inputSchema: objectSchema({}),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  },
-  {
-    name: "openreel_list_media_protocols",
-    title: "List OpenReel Media Protocols",
-    description: "List the installed OpenReel protocol catalog for image, video, or audio providers.",
-    inputSchema: objectSchema(
-      {
-        kind: { type: "string", enum: ["image", "video", "audio"], description: "Media protocol kind." },
-      },
-      ["kind"],
-    ),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
@@ -654,7 +655,12 @@ const TOOLS = [
             extra_fields: objectField("Temporary run fields."),
             hidden_extra_field_keys: stringArrayField("Temporary keys kept private to the current run."),
             wait: booleanField("Wait for the persisted terminal state.", true),
-            wait_timeout_seconds: { type: "integer", minimum: 1, maximum: 1200 },
+            wait_timeout_seconds: {
+              type: "integer",
+              minimum: 1,
+              maximum: 1200,
+              default: DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
+            },
           }, ["node_id"]),
         },
       },
@@ -1586,10 +1592,15 @@ async function applyCreatedPositions(projectId, result, args) {
   return placements.length ? { ...result, placements } : result;
 }
 
-async function waitForNode({ project_id, node_id, timeout_seconds = 600, poll_interval_seconds = 2 }) {
+async function waitForNode({
+  project_id,
+  node_id,
+  timeout_seconds = DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
+  poll_interval_seconds = 2,
+}) {
   const projectId = requireString(project_id, "project_id");
   const internalId = await resolveInternalNodeId(projectId, node_id);
-  const timeoutMs = boundedNumber(timeout_seconds, 600, 1, 1200) * 1000;
+  const timeoutMs = boundedNumber(timeout_seconds, DEFAULT_NODE_WAIT_TIMEOUT_SECONDS, 1, 1200) * 1000;
   const intervalMs = boundedNumber(poll_interval_seconds, 2, 0.5, 10) * 1000;
   const startedAt = Date.now();
   let node = null;
@@ -1610,8 +1621,15 @@ async function waitForNode({ project_id, node_id, timeout_seconds = 600, poll_in
   return {
     ok: false,
     terminal: false,
+    generation_failed: false,
+    run_continues: true,
     status: String(node?.status ?? "unknown"),
-    error: "Timed out while waiting for the OpenReel node.",
+    error: "Timed out while waiting for the OpenReel node; the existing generation may still be running.",
+    hint: "Continue with openreel_wait_for_node on this node. Do not call openreel_run_node again unless the user explicitly requests a new generation.",
+    next: {
+      tool: "openreel_wait_for_node",
+      arguments: { project_id: projectId, node_id: internalId },
+    },
     elapsed_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
     node,
   };
@@ -2253,7 +2271,7 @@ const HANDLERS = {
     const waited = await waitForNode({
       project_id: args.project_id,
       node_id: nodeId,
-      timeout_seconds: args.wait_timeout_seconds ?? 600,
+      timeout_seconds: args.wait_timeout_seconds ?? DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
       poll_interval_seconds: 2,
     });
     return { ok: waited.ok, run_result: result, wait_result: waited };
@@ -2337,12 +2355,6 @@ const HANDLERS = {
     };
   },
 
-  async openreel_list_media_protocols(args) {
-    const kind = requireString(args.kind, "kind");
-    if (!new Set(["image", "video", "audio"]).has(kind)) throw new Error("kind must be image, video, or audio.");
-    return requestOpenReel(`/api/tools/config/${kind}-protocols`);
-  },
-
 };
 
 function asStructuredContent(data) {
@@ -2380,7 +2392,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
+        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Video always uses that OpenReel node path; OpenReel and its Universal Model Adapter own provider requests and upstream polling. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
     });
     return;
   }

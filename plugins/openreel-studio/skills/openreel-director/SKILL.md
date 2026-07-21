@@ -65,11 +65,19 @@ Use this path when the user selects an OpenReel image provider or when a video o
 
 The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, and exact resolutions.
 
+For video, the plugin stops at the OpenReel node boundary. OpenReel selects its
+explicit Universal Model Adapter protocol and target; UMA constructs provider
+requests, uploads references, polls the upstream task, and parses the result.
+The plugin only reads the persisted OpenReel node status while waiting.
+
 ## Recovery and completion
 
 - Repair schema or field errors from the latest tool result, then retry the affected stage with the same project and creative inputs.
 - Reuse generated files and existing node ids during upload recovery so a transport retry preserves the original media and canvas identity.
 - Use capability discovery for a waiting operation after an intentionally non-waiting run when a downstream step requires terminal media.
+- A non-terminal wait timeout is not a generation failure. Continue with the
+  waiting capability on the same node; do not call `openreel_run_node` again
+  unless the user explicitly requests a separate generation.
 - Report the concrete failing stage, returned error, preserved outputs, and next available action when the same verified input fails again.
 
 ## Authorization and secrets
