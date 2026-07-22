@@ -63,7 +63,7 @@ node scripts/openreel-mcp.mjs --check
 1. `openreel_list_projects` 返回会话 ID、名称和 `_codex_selected` 状态。
 2. `openreel_select_project` 使用项目 ID 或唯一的完整标题切换目标；同名项目使用 ID。
 3. 项目级工具默认操作当前选中项目。
-4. `openreel_create_project` 使用会话名称创建项目并自动选中。
+4. `openreel_create_project` 使用会话名称创建项目并自动选中，同时通知已打开的 OpenReel 页面切换到新项目并刷新。
 5. `openreel_update_project` 修改会话名称；删除当前项目后选择状态随之清空。
 
 插件选择决定 Codex 的操作目标。OpenReel 浏览器或桌面窗口继续由用户在左侧项目栏控制显示目标。

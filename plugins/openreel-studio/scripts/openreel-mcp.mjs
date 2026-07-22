@@ -125,7 +125,7 @@ const TOOLS = [
   {
     name: "openreel_create_project",
     title: "Create OpenReel Project",
-    description: "Create a project, select it for this Codex session, and return its project id.",
+    description: "Create a project, select it for this Codex session, and ask an already-open OpenReel page to switch to it and reload.",
     inputSchema: objectSchema(
       { title: stringField("Session name.") },
       ["title"],
@@ -1976,9 +1976,21 @@ const HANDLERS = {
 
   async openreel_create_project(args) {
     const body = { title: requireString(args.title, "title") };
-    const project = await requestOpenReel("/api/projects", { method: "POST", json: body });
+    const previousProject = selectedProjectSummary();
+    const query = new URLSearchParams({ activate_ui: "true" });
+    if (previousProject?.id) query.set("source_project_id", previousProject.id);
+    const project = await requestOpenReel(`/api/projects?${query}`, { method: "POST", json: body });
     bindProject(project);
-    return { id: project.id, title: project.title, _codex_selected: true };
+    return {
+      id: project.id,
+      title: project.title,
+      _codex_selected: true,
+      ui_activation: {
+        requested: true,
+        reload_page: true,
+        notified_project_id: previousProject?.id ?? project.id,
+      },
+    };
   },
 
   async openreel_get_project(args) {

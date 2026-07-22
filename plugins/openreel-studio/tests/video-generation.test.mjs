@@ -13,6 +13,7 @@ async function startFakeOpenReel() {
   const toolCalls = [];
   const nodeReads = [];
   const waitRequests = [];
+  const projectCreateRequests = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -21,6 +22,15 @@ async function startFakeOpenReel() {
 
     if (request.url === "/api/health") {
       response.end(JSON.stringify({ status: "ok", app: "openreel-studio", version: "test" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/api/projects/project-old") {
+      response.end(JSON.stringify({ id: "project-old", title: "Old project" }));
+      return;
+    }
+    if (request.method === "POST" && request.url?.startsWith("/api/projects?")) {
+      projectCreateRequests.push({ url: request.url, body });
+      response.end(JSON.stringify({ id: "project-new", title: body?.title }));
       return;
     }
     if (request.url === "/api/tools/node-contract") {
@@ -136,6 +146,7 @@ async function startFakeOpenReel() {
     toolCalls,
     nodeReads,
     waitRequests,
+    projectCreateRequests,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -182,6 +193,38 @@ function startBridge(baseUrl) {
     },
   };
 }
+
+test("project creation selects the new project and requests an OpenReel page reload", async () => {
+  const fake = await startFakeOpenReel();
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+    await bridge.call("tools/call", {
+      name: "openreel_select_project",
+      arguments: { project_id: "project-old" },
+    });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_create_project",
+      arguments: { title: "New project" },
+    });
+    const result = response.result.structuredContent;
+
+    assert.equal(result.id, "project-new");
+    assert.equal(result._codex_selected, true);
+    assert.deepEqual(result.ui_activation, {
+      requested: true,
+      reload_page: true,
+      notified_project_id: "project-old",
+    });
+    assert.deepEqual(fake.projectCreateRequests, [{
+      url: "/api/projects?activate_ui=true&source_project_id=project-old",
+      body: { title: "New project" },
+    }]);
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
 
 test("video tools use the 20-minute OpenReel wait contract without an old protocol tool", async () => {
   const fake = await startFakeOpenReel();
