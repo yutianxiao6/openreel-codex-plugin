@@ -20,7 +20,6 @@ const CONNECTION_ENV_NAMES = [
   "OPENREEL_PASSWORD",
   "OPENREEL_TOKEN",
 ];
-const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "cancelled", "canceled"]);
 
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
@@ -466,13 +465,13 @@ const TOOLS = [
         action: { type: "string", enum: ["run", "render", "force"], description: "Optional node.run action." },
         extra_fields: objectField("Temporary fields applied to the current run."),
         hidden_extra_field_keys: stringArrayField("Temporary keys to remove from persisted output and response."),
-        wait: booleanField("Poll the persisted node until it completes or fails.", true),
+        wait: booleanField("Keep this tool call open until OpenReel reports a terminal node event.", true),
         wait_timeout_seconds: {
           type: "integer",
           minimum: 1,
           maximum: 1200,
           default: DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
-          description: "How long to wait for OpenReel's persisted terminal node state. A timeout does not rerun generation.",
+          description: "How long OpenReel should hold the server-side event wait. A timeout does not rerun generation.",
         },
       },
       ["node_id"],
@@ -482,7 +481,7 @@ const TOOLS = [
   {
     name: "openreel_wait_for_node",
     title: "Wait for OpenReel Node",
-    description: "Poll a persisted node until its status is completed, failed, or cancelled.",
+    description: "Hold one server-side event wait until a persisted node completes, fails, is cancelled, or times out.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
@@ -492,9 +491,8 @@ const TOOLS = [
           minimum: 1,
           maximum: 1200,
           default: DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
-          description: "How long to keep reading the existing OpenReel node; this never starts another generation.",
+          description: "How long OpenReel should keep the event wait open; this never starts another generation.",
         },
-        poll_interval_seconds: { type: "number", minimum: 0.5, maximum: 10, description: "Polling interval." },
       },
       ["project_id", "node_id"],
     ),
@@ -746,6 +744,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   "openreel_update_edges",
   "openreel_delete_edges",
   "openreel_run_node",
+  "openreel_wait_for_node",
   "openreel_publish_generated_image",
   "openreel_upload_node_media",
   "openreel_search_capabilities",
@@ -768,6 +767,7 @@ const PROJECT_SCOPED_TOOL_NAMES = new Set([
   "openreel_update_edges",
   "openreel_delete_edges",
   "openreel_run_node",
+  "openreel_wait_for_node",
   "openreel_publish_generated_image",
   "openreel_upload_node_media",
   "openreel_execute_capability",
@@ -815,14 +815,6 @@ const CAPABILITY_CATALOG = [
     summary: "Preflight and execute several persisted nodes in order, stopping at the first failure.",
     keywords: "run many batch sequence render generate nodes 批量 依次 运行 渲染 生成 节点",
     usage: "Order upstream nodes before downstream nodes; each run may wait for a terminal result.",
-  },
-  {
-    id: "node.wait",
-    handler: "openreel_wait_for_node",
-    title: "Wait for node completion",
-    summary: "Poll one persisted node until it completes, fails, is cancelled, or times out.",
-    keywords: "wait poll status complete failed cancelled timeout node 等待 轮询 状态 完成 失败 取消 超时 节点",
-    usage: "Use after a non-waiting run when a later step depends on the persisted output.",
   },
   {
     id: "canvas.snapshot.restore",
@@ -1596,42 +1588,23 @@ async function waitForNode({
   project_id,
   node_id,
   timeout_seconds = DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
-  poll_interval_seconds = 2,
 }) {
   const projectId = requireString(project_id, "project_id");
   const internalId = await resolveInternalNodeId(projectId, node_id);
-  const timeoutMs = boundedNumber(timeout_seconds, DEFAULT_NODE_WAIT_TIMEOUT_SECONDS, 1, 1200) * 1000;
-  const intervalMs = boundedNumber(poll_interval_seconds, 2, 0.5, 10) * 1000;
-  const startedAt = Date.now();
-  let node = null;
-  while (Date.now() - startedAt <= timeoutMs) {
-    node = await requestOpenReel(`/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}`);
-    const status = String(node?.status ?? "").toLowerCase();
-    if (TERMINAL_NODE_STATUSES.has(status)) {
-      return {
-        ok: status === "completed",
-        terminal: true,
-        status,
-        elapsed_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
-        node,
-      };
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
+  const timeoutSeconds = boundedNumber(timeout_seconds, DEFAULT_NODE_WAIT_TIMEOUT_SECONDS, 1, 1200);
+  const query = new URLSearchParams({ timeout_seconds: String(timeoutSeconds) });
+  const result = await requestOpenReel(
+    `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/wait?${query}`,
+    { timeoutMs: timeoutSeconds * 1000 + 30 * 1000 },
+  );
+  if (result?.terminal !== false) return result;
   return {
-    ok: false,
-    terminal: false,
-    generation_failed: false,
-    run_continues: true,
-    status: String(node?.status ?? "unknown"),
-    error: "Timed out while waiting for the OpenReel node; the existing generation may still be running.",
+    ...result,
     hint: "Continue with openreel_wait_for_node on this node. Do not call openreel_run_node again unless the user explicitly requests a new generation.",
     next: {
       tool: "openreel_wait_for_node",
       arguments: { project_id: projectId, node_id: internalId },
     },
-    elapsed_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
-    node,
   };
 }
 
@@ -2272,7 +2245,6 @@ const HANDLERS = {
       project_id: args.project_id,
       node_id: nodeId,
       timeout_seconds: args.wait_timeout_seconds ?? DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
-      poll_interval_seconds: 2,
     });
     return { ok: waited.ok, run_result: result, wait_result: waited };
   },
@@ -2392,7 +2364,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Video always uses that OpenReel node path; OpenReel and its Universal Model Adapter own provider requests and upstream polling. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
+        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, server-wait, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Video always uses that OpenReel node path; OpenReel and its Universal Model Adapter own provider requests and upstream polling, while the bridge holds one event-driven server wait for the terminal node result. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
     });
     return;
   }

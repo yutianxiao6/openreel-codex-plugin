@@ -11,6 +11,7 @@ const BRIDGE_PATH = fileURLToPath(new URL("../scripts/openreel-mcp.mjs", import.
 async function startFakeOpenReel() {
   const toolCalls = [];
   const nodeReads = [];
+  const waitRequests = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -50,6 +51,18 @@ async function startFakeOpenReel() {
       response.end(JSON.stringify({ id: "node-7", type: "video", status: "processing" }));
       return;
     }
+    if (request.method === "GET" && request.url?.startsWith("/api/projects/project-1/nodes/node-7/wait?")) {
+      waitRequests.push(request.url);
+      response.end(JSON.stringify({
+        ok: true,
+        terminal: false,
+        generation_failed: false,
+        run_continues: true,
+        status: "processing",
+        node: { id: "node-7", type: "video", status: "processing" },
+      }));
+      return;
+    }
 
     response.statusCode = 404;
     response.end(JSON.stringify({ detail: "not found" }));
@@ -61,6 +74,7 @@ async function startFakeOpenReel() {
     baseUrl: `http://127.0.0.1:${address.port}`,
     toolCalls,
     nodeReads,
+    waitRequests,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -116,8 +130,11 @@ test("video tools use the 20-minute OpenReel wait contract without an old protoc
     const response = await bridge.call("tools/list");
     const tools = response.result.tools;
     const run = tools.find((item) => item.name === "openreel_run_node");
+    const wait = tools.find((item) => item.name === "openreel_wait_for_node");
 
     assert.equal(run.inputSchema.properties.wait_timeout_seconds.default, 1200);
+    assert.equal(wait.inputSchema.properties.timeout_seconds.default, 1200);
+    assert.equal(wait.inputSchema.properties.poll_interval_seconds, undefined);
     assert.equal(tools.some((item) => item.name === "openreel_list_media_protocols"), false);
   } finally {
     await bridge.close();
@@ -140,7 +157,8 @@ test("a video wait timeout preserves the running node and never submits twice", 
     });
     const result = response.result.structuredContent;
 
-    assert.equal(response.result.isError, true);
+    assert.equal(response.result.isError, undefined);
+    assert.equal(result.ok, true);
     assert.equal(result.run_result.ok, true);
     assert.equal(result.wait_result.terminal, false);
     assert.equal(result.wait_result.generation_failed, false);
@@ -148,7 +166,33 @@ test("a video wait timeout preserves the running node and never submits twice", 
     assert.equal(result.wait_result.next.tool, "openreel_wait_for_node");
     assert.equal(result.wait_result.next.arguments.node_id, "node-7");
     assert.equal(fake.toolCalls.filter((item) => item.tool === "node.run").length, 1);
-    assert.ok(fake.nodeReads.length >= 1);
+    assert.deepEqual(fake.waitRequests, ["/api/projects/project-1/nodes/node-7/wait?timeout_seconds=1"]);
+    assert.equal(fake.nodeReads.length, 0);
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("the direct wait tool holds one server wait without running the node", async () => {
+  const fake = await startFakeOpenReel();
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_wait_for_node",
+      arguments: {
+        project_id: "project-1",
+        node_id: "node-7",
+        timeout_seconds: 1,
+      },
+    });
+
+    assert.equal(response.result.isError, undefined);
+    assert.equal(response.result.structuredContent.terminal, false);
+    assert.equal(fake.toolCalls.filter((item) => item.tool === "node.run").length, 0);
+    assert.deepEqual(fake.waitRequests, ["/api/projects/project-1/nodes/node-7/wait?timeout_seconds=1"]);
+    assert.equal(fake.nodeReads.length, 0);
   } finally {
     await bridge.close();
     await fake.close();
