@@ -23,6 +23,7 @@ Follow this sequence and reuse confirmed state throughout the current Codex sess
 | --- | --- |
 | List, select, create, rename, read, or delete a project | Direct project tool |
 | Read, create, update, move, or delete nodes | Direct node tool |
+| Inspect provider choices or repair rejected media fields | `openreel_describe_node_contract` |
 | Create, relabel, or delete dependency edges | Direct edge tool |
 | Run one prepared node | `openreel_run_node` |
 | Wait for an already running node | `openreel_wait_for_node` |
@@ -58,11 +59,10 @@ Each requested image uses one generation backend. A comparison request may inten
 
 Use this path when the user selects an OpenReel image provider or when a video or audio node uses OpenReel's configured media runtime.
 
-1. Search for the dynamic node-contract capability using the intended node type and model parameters.
-2. Describe and execute that capability with the candidate fields.
-3. Apply its normalized defaults and supported values. A `ready=false` result supplies field errors to repair before creation.
-4. Create the node with `openreel_create_nodes`, including accepted model, mode, references, aspect ratio, resolution, duration, and other returned fields.
-5. Run it with `openreel_run_node`. Its default waiting behavior returns the persisted terminal result.
+1. When the provider and fields are already known, call `openreel_create_nodes` directly; the bridge preflights the current dynamic contract internally before it creates anything.
+2. Put each media dependency once in `fields.references`. Do not mirror the same source into `reference_images` or `depends_on`; OpenReel derives the dependency edge, and `first_frame` promotes the first image reference to the required first-frame role.
+3. If provider selection is unclear or creation returns field errors, call `openreel_describe_node_contract` once with the candidate fields, apply its supported values and normalized defaults, then retry creation.
+4. Run the created node with `openreel_run_node`. Its default waiting behavior returns a compact persisted terminal summary.
 
 The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, and exact resolutions.
 
@@ -71,7 +71,9 @@ explicit Universal Model Adapter protocol and target; UMA constructs provider
 requests, uploads references, polls the upstream task, and parses the result.
 The plugin opens one server-side event wait and does not poll node status.
 OpenReel persists the terminal node and publishes the event that resolves that
-wait.
+wait. Create, update, run, and wait responses omit echoed prompts, adapter resume
+payloads, poll history, and media history; read a node explicitly only when a
+downstream decision truly needs its full fields.
 
 ## Recovery and completion
 

@@ -71,11 +71,11 @@ const nodeFieldsSchema = (description) => ({
     duration_seconds: { type: "number", exclusiveMinimum: 0, description: "Requested media duration in seconds." },
     model: stringField("Configured OpenReel provider name or model name."),
     provider: stringField("Configured OpenReel provider name."),
-    video_mode: stringField("Provider-supported video generation mode."),
+    video_mode: stringField("Provider-supported video mode. In first_frame mode the first image in references is promoted to the first-frame role automatically."),
     production_path: stringField("Creative production path or method."),
-    references: { type: "array", description: "Creative dependencies as refs or {ref, role} objects." },
-    depends_on: { type: "array", description: "Explicit upstream dependencies." },
-    reference_images: { type: "array", description: "Image references." },
+    references: { type: "array", description: "Canonical creative/media dependencies as refs or {ref, role} objects. Put each source here once." },
+    depends_on: { type: "array", description: "Execution ordering only. A dependency is not media input unless it also appears in references." },
+    reference_images: { type: "array", description: "Direct image inputs for compatibility. Do not repeat an image already present in references." },
     reference_videos: { type: "array", description: "Video references." },
     reference_audios: { type: "array", description: "Audio references." },
   },
@@ -234,7 +234,7 @@ const TOOLS = [
     name: "openreel_create_nodes",
     title: "Create OpenReel Canvas Nodes",
     description:
-      "Create one text/image/video/audio node or a batch. Batch items may use client_ref and reference client:<ref> to build dependencies in one call.",
+      "Preflight and create one text/image/video/audio node or a batch. Call this directly when provider and fields are known; contract errors are returned before creation. Batch items may use client_ref and reference client:<ref>.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
@@ -285,7 +285,7 @@ const TOOLS = [
   {
     name: "openreel_update_nodes",
     title: "Update OpenReel Canvas Nodes",
-    description: "Patch one or several existing nodes in place while preserving their ids and history.",
+    description: "Patch one or several existing nodes in place while preserving their ids and history. Returns compact node identity, status, and changed-field names without echoing large prompts.",
     inputSchema: objectSchema(
       {
         project_id: stringField("OpenReel project UUID."),
@@ -457,7 +457,7 @@ const TOOLS = [
     name: "openreel_run_node",
     title: "Run OpenReel Node",
     description:
-      "Preflight and run an existing node directly through OpenReel's node runner and its configured media or language model provider. The OpenReel chat agent remains a separate path.",
+      "Preflight and run an existing node directly through OpenReel's configured provider. Returns a compact task/terminal summary without echoing prompts, resume payloads, or poll history. The OpenReel chat agent remains separate.",
     inputSchema: objectSchema(
       {
         project_id: stringField("OpenReel project UUID."),
@@ -481,7 +481,7 @@ const TOOLS = [
   {
     name: "openreel_wait_for_node",
     title: "Wait for OpenReel Node",
-    description: "Hold one server-side event wait until a persisted node completes, fails, is cancelled, or times out.",
+    description: "Hold one server-side event wait until a persisted node completes, fails, is cancelled, or times out; returns only compact task, media URL, status, and error fields.",
     inputSchema: objectSchema(
       {
         project_id: stringField("Optional project UUID; defaults to the selected project."),
@@ -736,6 +736,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   "openreel_delete_project",
   "openreel_get_canvas",
   "openreel_get_nodes",
+  "openreel_describe_node_contract",
   "openreel_create_nodes",
   "openreel_update_nodes",
   "openreel_move_nodes",
@@ -759,6 +760,7 @@ const PROJECT_SCOPED_TOOL_NAMES = new Set([
   "openreel_delete_project",
   "openreel_get_canvas",
   "openreel_get_nodes",
+  "openreel_describe_node_contract",
   "openreel_create_nodes",
   "openreel_update_nodes",
   "openreel_move_nodes",
@@ -776,14 +778,6 @@ const PROJECT_SCOPED_TOOL_NAMES = new Set([
 
 const CAPABILITY_CATALOG_VERSION = "openreel.canvas.capabilities.v1";
 const CAPABILITY_CATALOG = [
-  {
-    id: "node.contract.describe",
-    handler: "openreel_describe_node_contract",
-    title: "Describe dynamic node contract",
-    summary: "Preflight candidate text, image, video, or audio fields against the current project, provider, model, and mode.",
-    keywords: "contract schema fields model provider resolution duration references 参数 合同 模型 分辨率 时长 参考图",
-    usage: "Use before authoring an unfamiliar media node. A ready=false result must be repaired before creation or execution.",
-  },
   {
     id: "node.duplicate",
     handler: "openreel_duplicate_nodes",
@@ -1461,7 +1455,7 @@ function contractFailure(contract, index) {
     error_kind: "node_contract_failed",
     error: "OpenReel rejected the node fields before creation.",
     ...(index === undefined ? {} : { batch_index: index }),
-    contract,
+    contract: compactNodeContract(contract),
     hint: "Repair the reported fields, preflight the revised values, and retry creation on the intended node path.",
   };
 }
@@ -1597,9 +1591,10 @@ async function waitForNode({
     `/api/projects/${encodeSegment(projectId, "project_id")}/nodes/${encodeSegment(internalId, "node_id")}/wait?${query}`,
     { timeoutMs: timeoutSeconds * 1000 + 30 * 1000 },
   );
-  if (result?.terminal !== false) return result;
+  const compact = compactWaitResult(result);
+  if (compact.terminal !== false) return compact;
   return {
-    ...result,
+    ...compact,
     hint: "Continue with openreel_wait_for_node on this node. Do not call openreel_run_node again unless the user explicitly requests a new generation.",
     next: {
       tool: "openreel_wait_for_node",
@@ -1610,6 +1605,222 @@ async function waitForNode({
 
 function omitUndefined(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function compactString(value, limit = 800) {
+  if (typeof value !== "string") return value;
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}… [${value.length - limit} chars omitted]`;
+}
+
+function compactArray(value, limit = 10) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, limit).map((item) => {
+    if (typeof item === "string") return compactString(item, 300);
+    const record = objectValue(item);
+    if (!record) return item;
+    return omitUndefined({
+      field: record.field,
+      code: record.code,
+      message: compactString(record.message, 400),
+      kind: record.kind,
+      actual: record.actual,
+      minimum: record.minimum,
+      maximum: record.maximum,
+      supported: Array.isArray(record.supported) ? record.supported.slice(0, 20) : record.supported,
+      error: compactString(record.error, 400),
+    });
+  });
+}
+
+function nestedResultSources(value) {
+  const root = objectValue(value);
+  if (!root) return [];
+  const sources = [];
+  const add = (candidate) => {
+    const record = objectValue(candidate);
+    if (record && !sources.includes(record)) sources.push(record);
+  };
+  add(root);
+  add(root.result);
+  add(root.output);
+  add(root.node);
+  add(objectValue(root.node)?.output);
+  add(objectValue(root.result)?.result);
+  add(objectValue(root.result)?.output);
+  return sources;
+}
+
+function firstResultValue(sources, ...keys) {
+  for (const source of sources) {
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+  }
+  return undefined;
+}
+
+function compactProgress(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return compactString(value, 200);
+  return omitUndefined({
+    percent: value.percent ?? value.progress,
+    status: value.status,
+    message: compactString(value.message, 300),
+  });
+}
+
+function compactMediaResult(value) {
+  const sources = nestedResultSources(value);
+  if (!sources.length) return {};
+  const read = (...keys) => firstResultValue(sources, ...keys);
+  return omitUndefined({
+    ok: read("ok"),
+    node_id: read("node_id", "_canvas_node_id", "_canvas_id", "id"),
+    type: read("type", "node_type"),
+    status: read("status"),
+    async: read("async"),
+    job_id: read("job_id"),
+    provider_task_id: read("provider_task_id"),
+    provider: read("provider"),
+    model: read("model"),
+    mode: read("video_mode", "mode"),
+    asset_id: read("asset_id"),
+    asset_ids: compactArray(read("asset_ids")),
+    url: compactString(read("local_url", "url", "remote_url"), 2000),
+    remote_url: compactString(read("remote_url"), 2000),
+    thumbnail_url: compactString(read("thumbnail_url"), 2000),
+    last_frame_url: compactString(read("last_frame_url"), 2000),
+    duration_seconds: read("duration_seconds"),
+    aspect_ratio: read("aspect_ratio"),
+    resolution: read("resolution"),
+    progress: compactProgress(read("progress")),
+    error: compactString(read("error", "error_message"), 1000),
+    error_kind: read("error_kind"),
+    provider_msg: compactString(read("provider_msg"), 800),
+    retryable: read("retryable"),
+    adapter_resume_supported: read("adapter_resume_supported"),
+    resumed_existing_job: read("resumed_existing_job"),
+    hint: compactString(read("hint"), 800),
+    errors: compactArray(read("errors", "validation_errors"), 10),
+    warnings: compactArray(read("warnings", "reference_warnings"), 10),
+  });
+}
+
+function compactNode(node) {
+  const record = objectValue(node);
+  if (!record) return undefined;
+  return omitUndefined({
+    id: record.id ?? record.node_id,
+    node_id: record.node_id ?? record.id,
+    _canvas_node_id: record._canvas_node_id ?? record._canvas_id,
+    display_id: record.display_id ?? record._canvas_display_id,
+    type: record.type ?? record.node_type,
+    title: compactString(record.title, 300),
+    status: record.status,
+    error_message: compactString(record.error_message, 800),
+  });
+}
+
+function compactWaitResult(result) {
+  const record = objectValue(result) ?? {};
+  const media = compactMediaResult(record.node?.output ?? record);
+  const node = compactNode(record.node);
+  return omitUndefined({
+    ...media,
+    ok: record.ok ?? media.ok,
+    terminal: record.terminal,
+    generation_failed: record.generation_failed,
+    run_continues: record.run_continues,
+    status: record.status ?? node?.status ?? media.status,
+    elapsed_seconds: record.elapsed_seconds,
+    node_id: node?.id ?? media.node_id,
+    node,
+  });
+}
+
+function compactNodeMutationResult(result) {
+  const record = objectValue(result) ?? {};
+  if (Array.isArray(record.nodes) || Array.isArray(record.results)) {
+    const items = record.nodes ?? record.results;
+    return omitUndefined({
+      ok: record.ok !== false,
+      status: record.status,
+      created_count: record.created_count,
+      updated_count: record.updated_count,
+      nodes: items.map((item) => ({
+        index: item?.index,
+        ...compactNode(item?.node ?? item),
+        ...compactMediaResult(item),
+      })),
+      errors: compactArray(record.errors, 20),
+    });
+  }
+  const node = compactNode(record) ?? {};
+  const media = compactMediaResult(record);
+  const changedFields = objectValue(record.changes) ? Object.keys(record.changes) : undefined;
+  return omitUndefined({
+    ...node,
+    ...media,
+    ok: record.ok !== false,
+    changed_fields: changedFields,
+    placements: Array.isArray(record.placements)
+      ? record.placements.slice(0, 20).map((item) => compactNode(item) ?? item)
+      : undefined,
+  });
+}
+
+function compactNodeContract(contract) {
+  const record = objectValue(contract) ?? {};
+  const normalized = objectValue(record.normalized_fields) ?? {};
+  const omittedInputFields = [];
+  const normalizedFields = {};
+  for (const [key, value] of Object.entries(normalized)) {
+    if (new Set(["prompt", "content", "description"]).has(key)) {
+      omittedInputFields.push(key);
+      continue;
+    }
+    normalizedFields[key] = Array.isArray(value)
+      ? value.slice(0, 20)
+      : compactString(value, 500);
+  }
+  const capabilities = objectValue(record.capabilities) ?? {};
+  return omitUndefined({
+    ok: record.ok,
+    ready: record.ready,
+    contract_version: record.contract_version,
+    node_type: record.node_type,
+    required_fields: compactArray(record.required_fields, 40),
+    optional_fields: compactArray(record.optional_fields, 60),
+    normalized_fields: normalizedFields,
+    omitted_input_fields: omittedInputFields.length ? omittedInputFields : undefined,
+    provider: record.provider,
+    available_providers: Array.isArray(record.available_providers)
+      ? record.available_providers.slice(0, 30)
+      : undefined,
+    capabilities: omitUndefined({
+      supported_modes: compactArray(capabilities.supported_modes, 30),
+      supported_aspect_ratios: compactArray(capabilities.supported_aspect_ratios, 30),
+      supported_resolutions: compactArray(capabilities.supported_resolutions, 30),
+      supported_sizes: compactArray(capabilities.supported_sizes, 30),
+      default_aspect_ratio: capabilities.default_aspect_ratio,
+      default_resolution: capabilities.default_resolution,
+      duration: capabilities.duration,
+      reference_limits: capabilities.reference_limits,
+      result_type: capabilities.result_type,
+    }),
+    effective_video_mode: record.effective_video_mode,
+    reference_counts: record.reference_counts,
+    errors: compactArray(record.errors, 20),
+    warnings: compactArray(record.warnings, 20),
+    repair: record.repair,
+    response_compacted: true,
+  });
 }
 
 function sessionProject(project) {
@@ -2034,7 +2245,7 @@ const HANDLERS = {
   },
 
   async openreel_describe_node_contract(args) {
-    return requestNodeContract(args.project_id, args.type, args.fields ?? {});
+    return compactNodeContract(await requestNodeContract(args.project_id, args.type, args.fields ?? {}));
   },
 
   async openreel_create_nodes(args) {
@@ -2051,7 +2262,7 @@ const HANDLERS = {
       nodes: normalized.nodes,
     }));
     if (result?.ok === false) return result;
-    return applyCreatedPositions(normalized.project_id, result, normalized);
+    return compactNodeMutationResult(await applyCreatedPositions(normalized.project_id, result, normalized));
   },
 
   async openreel_duplicate_nodes(args) {
@@ -2109,13 +2320,14 @@ const HANDLERS = {
   },
 
   async openreel_update_nodes(args) {
-    return callOpenReelTool("node.update", omitUndefined({
+    const result = await callOpenReelTool("node.update", omitUndefined({
       project_id: args.project_id,
       node_id: args.node_id,
       patch: args.patch,
       updates: args.updates,
       node_ids: args.node_ids,
     }));
+    return compactNodeMutationResult(result);
   },
 
   async openreel_move_nodes(args) {
@@ -2239,14 +2451,15 @@ const HANDLERS = {
       extra_fields: args.extra_fields,
       hidden_extra_field_keys: args.hidden_extra_field_keys,
     }));
-    if (args.wait === false || result?.ok === false) return result;
+    const compactRun = compactMediaResult(result);
+    if (args.wait === false || result?.ok === false) return compactRun;
     const nodeId = result?._canvas_node_id || result?._canvas_id || args.node_id;
     const waited = await waitForNode({
       project_id: args.project_id,
       node_id: nodeId,
       timeout_seconds: args.wait_timeout_seconds ?? DEFAULT_NODE_WAIT_TIMEOUT_SECONDS,
     });
-    return { ok: waited.ok, run_result: result, wait_result: waited };
+    return { ok: waited.ok, run_result: compactRun, wait_result: waited };
   },
 
   async openreel_wait_for_node(args) {
@@ -2364,7 +2577,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, single-run, server-wait, publish, and upload tools for common work. Use openreel_search_capabilities → openreel_describe_capability → the returned executor for dynamic contracts and uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default; use the OpenReel node contract → create → run path when the user selects an OpenReel-configured provider. Video always uses that OpenReel node path; OpenReel and its Universal Model Adapter own provider requests and upstream polling, while the bridge holds one event-driven server wait for the terminal node result. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Store creative dependencies in fields.references, accept complete persisted results as verification, and obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
+        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, contract, single-run, server-wait, publish, and upload tools for common work. Call openreel_create_nodes directly when media fields are known because it preflights internally; use openreel_describe_node_contract only for provider discovery or field repair. Use openreel_search_capabilities → openreel_describe_capability → the returned executor only for uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default. Video uses the OpenReel create → run path; list each media source once in fields.references, and do not mirror it into reference_images or depends_on. OpenReel and UMA own provider requests and upstream polling, while the bridge holds one event-driven server wait and returns a compact terminal summary. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
     });
     return;
   }

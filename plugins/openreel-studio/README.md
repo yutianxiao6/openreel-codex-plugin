@@ -91,7 +91,7 @@ node scripts/openreel-mcp.mjs --check
 - 单节点运行、服务端终态等待、已有节点媒体上传、Codex 图片发布。
 - 延迟能力的搜索、描述、普通执行和授权破坏性执行。
 
-延迟目录提供 7 项复杂或低频能力：动态节点合同、节点复制、媒体历史切换、混合画布 patch、批量运行、恢复画布快照、批量删除或恢复。搜索返回短摘要；描述返回精确 `input_schema`、安全类别、执行器名称和 `schema_ref`；执行阶段按 schema 校验参数。
+延迟目录提供 6 项复杂或低频能力：节点复制、媒体历史切换、混合画布 patch、批量运行、恢复画布快照、批量删除或恢复。搜索返回短摘要；描述返回精确 `input_schema`、安全类别、执行器名称和 `schema_ref`；执行阶段按 schema 校验参数。动态节点合同已通过 `openreel_describe_node_contract` 直接提供。
 
 混合画布 patch 支持通过 `client_ref` 和 `client:<ref>` 引用同一调用中新建的节点，并按顺序执行。
 
@@ -111,6 +111,12 @@ node scripts/openreel-mcp.mjs --check
 请求、不上传上游素材、不轮询服务商任务，也不解析服务商响应；这些职责由
 OpenReel 调用 Universal Model Adapter 完成。
 
+Provider 和字段已经明确时直接调用 `openreel_create_nodes`，桥接层会在创建前完成
+动态合同校验；只有 Provider 不明确或创建返回字段错误时才单独调用
+`openreel_describe_node_contract`。每个媒体来源只写一次 `fields.references`，不要再
+复制到 `reference_images` 或 `depends_on`；`first_frame` 会自动把第一张图片参考映射
+为首帧媒体角色。
+
 插件默认通过一个持续的服务端事件请求等待 OpenReel 节点终态，最长 20 分钟；
 插件本身不循环读取节点状态。OpenReel 后台通过 UMA 轮询供应商任务，落盘终态后
 发布画布事件并结束这一个等待请求。Codex 运行时可以继续等待同一个在途工具调用，
@@ -119,6 +125,10 @@ OpenReel 调用 Universal Model Adapter 完成。
 等待超时只表示当前等待请求没有等到终态，生成任务可能仍在后台运行；后续调用
 `openreel_wait_for_node` 继续等待同一个节点，以免创建重复计费任务。OpenReel API
 重启后的上游任务恢复也由 OpenReel 持久化状态并重新接入 UMA 轮询完成。
+
+节点创建、更新、运行和等待结果默认只返回节点身份、状态、任务 ID、媒体 URL 与
+错误摘要，不回显完整 prompt、适配器恢复请求、轮询历史或媒体历史。确实需要完整
+字段时再显式读取节点，避免大结果反复占用 Codex 上下文。
 
 ## 安全边界
 
