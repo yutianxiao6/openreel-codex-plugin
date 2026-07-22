@@ -62,9 +62,11 @@ Use this path when the user selects an OpenReel image provider or when a video o
 1. When the provider and fields are already known, call `openreel_create_nodes` directly; the bridge preflights the current dynamic contract internally before it creates anything.
 2. Put each media dependency once in `fields.references`. Do not mirror the same source into `reference_images` or `depends_on`; OpenReel derives the dependency edge, and `first_frame` promotes the first image reference to the required first-frame role.
 3. If provider selection is unclear or creation returns field errors, call `openreel_describe_node_contract` once with the candidate fields, apply its supported values and normalized defaults, then retry creation.
-4. Run the created node with `openreel_run_node`. Its default waiting behavior returns a compact persisted terminal summary.
+4. Default video creation to `resolution: "720p"`. Use 480p, 1080p, 2K, 4K, or any other resolution only when the user explicitly requests it. If the selected provider cannot produce 720p, ask the user instead of silently choosing another resolution.
+5. Set `fields.generate_audio` only when the selected protocol contract declares `supports_native_audio=true`. For every other protocol, omit the field entirely; do not infer sound support from the prompt or provider name.
+6. Run the created node with `openreel_run_node`. Its default waiting behavior returns a compact persisted terminal summary.
 
-The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, exact resolutions, and native video audio defaults. Omit `generate_audio` to use the normalized provider default; set it to `false` only when the user explicitly requests a silent video.
+The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, exact resolutions, and native video audio capability. A sound choice exists only for a target that explicitly declares native audio support.
 
 For video, the plugin stops at the OpenReel node boundary. OpenReel selects its
 explicit Universal Model Adapter protocol and target; UMA constructs provider

@@ -66,13 +66,13 @@ const nodeFieldsSchema = (description) => ({
     description: stringField("Optional node description."),
     prompt: stringField("Final model-facing prompt for image, video, or audio nodes."),
     aspect_ratio: stringField("Aspect ratio such as 16:9 or 9:16."),
-    resolution: stringField("Image exact pixels such as 2560x1440, or a provider-declared video resolution."),
+    resolution: stringField("Image exact pixels such as 2560x1440. Video defaults to 720p; use another resolution only when the user explicitly requests it."),
     quality: stringField("Provider-supported quality value."),
     duration_seconds: { type: "number", exclusiveMinimum: 0, description: "Requested media duration in seconds." },
     model: stringField("Configured OpenReel provider name or model name."),
     provider: stringField("Configured OpenReel provider name."),
     video_mode: stringField("Provider-supported video mode. In first_frame mode the first image in references is promoted to the first-frame role automatically."),
-    generate_audio: booleanField("Generate native video audio when supported. Omit this field to use OpenReel's model-specific default; set false only when the user explicitly requests a silent video."),
+    generate_audio: booleanField("Set only when the selected video protocol declares supports_native_audio=true. Omit it for every other protocol."),
     production_path: stringField("Creative production path or method."),
     references: { type: "array", description: "Canonical creative/media dependencies as refs or {ref, role} objects. Put each source here once." },
     depends_on: { type: "array", description: "Execution ordering only. A dependency is not media input unless it also appears in references." },
@@ -1461,6 +1461,16 @@ function contractFailure(contract, index) {
   };
 }
 
+function withVideoDefaults(type, fields) {
+  const normalized = fields && typeof fields === "object" && !Array.isArray(fields)
+    ? { ...fields }
+    : {};
+  if (type === "video" && !String(normalized.resolution ?? "").trim()) {
+    normalized.resolution = "720p";
+  }
+  return normalized;
+}
+
 async function preflightCreateArgs(args) {
   const projectId = requireString(args.project_id, "project_id");
   if (Array.isArray(args.nodes)) {
@@ -1471,9 +1481,7 @@ async function preflightCreateArgs(args) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         return contractFailure({ ok: false, ready: false, error: "Batch item must be an object." }, index);
       }
-      const fields = item.fields && typeof item.fields === "object" && !Array.isArray(item.fields)
-        ? { ...item.fields }
-        : {};
+      const fields = withVideoDefaults(item.type, item.fields);
       const contract = await requestNodeContract(projectId, item.type, fields);
       contracts.push(contract);
       if (contract?.ok !== true || contract?.ready !== true) return contractFailure(contract, index);
@@ -1481,9 +1489,7 @@ async function preflightCreateArgs(args) {
     }
     return { ok: true, args: { ...args, nodes: normalizedNodes }, contracts };
   }
-  const fields = args.fields && typeof args.fields === "object" && !Array.isArray(args.fields)
-    ? { ...args.fields }
-    : {};
+  const fields = withVideoDefaults(args.type, args.fields);
   if (!fields.prompt && typeof args.prompt === "string" && args.prompt.trim()) fields.prompt = args.prompt.trim();
   const contract = await requestNodeContract(projectId, args.type, fields);
   if (contract?.ok !== true || contract?.ready !== true) return contractFailure(contract);
@@ -2592,7 +2598,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, contract, single-run, server-wait, publish, and upload tools for common work. Call openreel_create_nodes directly when media fields are known because it preflights internally; use openreel_describe_node_contract only for provider discovery or field repair. Use openreel_search_capabilities → openreel_describe_capability → the returned executor only for uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default. Video uses the OpenReel create → run path; list each media source once in fields.references, and do not mirror it into reference_images or depends_on. OpenReel and UMA own provider requests and upstream polling, while the bridge holds one event-driven server wait and returns a compact terminal summary. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
+        "Codex orchestrates OpenReel through the openreel_* tools. Start with connection verification and exact project selection, then read the minimum state required for the request. Use direct project, node, edge, contract, single-run, server-wait, publish, and upload tools for common work. Call openreel_create_nodes directly when media fields are known because it preflights internally; use openreel_describe_node_contract only for provider discovery or field repair. Use openreel_search_capabilities → openreel_describe_capability → the returned executor only for uncommon operations. For image creation, use Codex imagegen → openreel_publish_generated_image by default. Video uses the OpenReel create → run path and defaults to 720p; use any other resolution only when the user explicitly requests it. List each media source once in fields.references, and do not mirror it into reference_images or depends_on. Set generate_audio only when the selected protocol declares supports_native_audio=true; otherwise omit it. OpenReel and UMA own provider requests and upstream polling, while the bridge holds one event-driven server wait and returns a compact terminal summary. A non-terminal wait timeout means continue waiting on the same node, never rerun it implicitly. Obtain explicit authorization for destructive actions. OpenReel /api/chat remains the separate built-in-agent path.",
     });
     return;
   }

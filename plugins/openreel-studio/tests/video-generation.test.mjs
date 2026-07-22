@@ -14,6 +14,7 @@ async function startFakeOpenReel() {
   const nodeReads = [];
   const waitRequests = [];
   const projectCreateRequests = [];
+  const contractRequests = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -34,6 +35,7 @@ async function startFakeOpenReel() {
       return;
     }
     if (request.url === "/api/tools/node-contract") {
+      contractRequests.push(body);
       response.end(JSON.stringify({
         ok: true,
         ready: true,
@@ -42,6 +44,7 @@ async function startFakeOpenReel() {
         normalized_fields: {
           prompt: body?.fields?.prompt ?? "video prompt",
           video_mode: "text_to_video",
+          resolution: body?.fields?.resolution,
           generate_audio: body?.fields?.generate_audio ?? true,
         },
         provider: { api_format: "universal_adapter", protocol_id: "test.video-task" },
@@ -155,6 +158,7 @@ async function startFakeOpenReel() {
     nodeReads,
     waitRequests,
     projectCreateRequests,
+    contractRequests,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -253,6 +257,16 @@ test("video tools use the 20-minute OpenReel wait contract without an old protoc
       tools.find((item) => item.name === "openreel_create_nodes")
         .inputSchema.properties.fields.properties.generate_audio.type,
       "boolean",
+    );
+    assert.match(
+      tools.find((item) => item.name === "openreel_create_nodes")
+        .inputSchema.properties.fields.properties.resolution.description,
+      /defaults to 720p/,
+    );
+    assert.match(
+      tools.find((item) => item.name === "openreel_create_nodes")
+        .inputSchema.properties.fields.properties.generate_audio.description,
+      /supports_native_audio=true/,
     );
     assert.match(
       tools.find((item) => item.name === "openreel_create_nodes").description,
@@ -379,11 +393,37 @@ test("node creation returns a compact persisted identity", async () => {
     assert.equal(result.ok, true);
     assert.equal(result.id, "node-created");
     assert.equal(result.status, "idle");
+    assert.equal(fake.contractRequests[0].fields.resolution, "720p");
     const createCall = fake.toolCalls.find((item) => item.tool === "node.create");
+    assert.equal(createCall.args.fields.resolution, "720p");
     assert.equal(createCall.args.fields.generate_audio, true);
     const serialized = JSON.stringify(response.result);
     assert.equal(serialized.includes("giant-prompt"), false);
     assert.ok(serialized.length < 2_000, `compact create result was ${serialized.length} characters`);
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("an explicitly requested video resolution is preserved", async () => {
+  const fake = await startFakeOpenReel();
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_create_nodes",
+      arguments: {
+        project_id: "project-1",
+        type: "video",
+        fields: { prompt: "explicit resolution", resolution: "1080p" },
+      },
+    });
+
+    assert.equal(response.result.structuredContent.ok, true);
+    assert.equal(fake.contractRequests[0].fields.resolution, "1080p");
+    const createCall = fake.toolCalls.find((item) => item.tool === "node.create");
+    assert.equal(createCall.args.fields.resolution, "1080p");
   } finally {
     await bridge.close();
     await fake.close();

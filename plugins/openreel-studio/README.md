@@ -108,8 +108,10 @@ node scripts/openreel-mcp.mjs --check
 
 视频统一走 OpenReel 动态节点合同：插件读取 `video` 节点支持的 Provider、模式、
 参考素材限制、时长、比例、分辨率和原生声音能力，创建节点后调用 `node.run`。
-`generate_audio` 缺省采用 OpenReel 的模型默认值；只有用户明确要求静音时才写
-`false`。插件不拼装服务商
+插件创建视频默认显式使用 `720p`；只有用户主动指定时才使用其他分辨率，如果目标
+不支持 720p 则先询问用户，不能自行换成其他分辨率。`generate_audio` 只在当前模型
+目标明确声明 `supports_native_audio=true` 时才允许设置；未声明能力的协议完全省略
+该字段。插件不拼装服务商
 请求、不上传上游素材、不轮询服务商任务，也不解析服务商响应；这些职责由
 OpenReel 调用 Universal Model Adapter 完成。
 
