@@ -1,6 +1,6 @@
 {
   "name": "openreel-studio",
-  "version": "0.1.0+codex.20260722135545",
+  "version": "0.1.0+codex.20260722150910",
   "description": "Add an opt-in Codex control path for OpenReel Studio projects, canvas nodes, media, and runs while its built-in agent remains available.",
   "author": {
     "name": "OpenReel Studio"

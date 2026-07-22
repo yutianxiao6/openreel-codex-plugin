@@ -64,7 +64,7 @@ Use this path when the user selects an OpenReel image provider or when a video o
 3. If provider selection is unclear or creation returns field errors, call `openreel_describe_node_contract` once with the candidate fields, apply its supported values and normalized defaults, then retry creation.
 4. Run the created node with `openreel_run_node`. Its default waiting behavior returns a compact persisted terminal summary.
 
-The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, and exact resolutions.
+The current OpenReel contract is authoritative for provider ids, model ids, modes, reference limits, durations, aspect ratios, exact resolutions, and native video audio defaults. Omit `generate_audio` to use the normalized provider default; set it to `false` only when the user explicitly requests a silent video.
 
 For video, the plugin stops at the OpenReel node boundary. OpenReel selects its
 explicit Universal Model Adapter protocol and target; UMA constructs provider

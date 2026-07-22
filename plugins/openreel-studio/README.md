@@ -107,7 +107,9 @@ node scripts/openreel-mcp.mjs --check
 ## 视频生成路径
 
 视频统一走 OpenReel 动态节点合同：插件读取 `video` 节点支持的 Provider、模式、
-参考素材限制、时长、比例和分辨率，创建节点后调用 `node.run`。插件不拼装服务商
+参考素材限制、时长、比例、分辨率和原生声音能力，创建节点后调用 `node.run`。
+`generate_audio` 缺省采用 OpenReel 的模型默认值；只有用户明确要求静音时才写
+`false`。插件不拼装服务商
 请求、不上传上游素材、不轮询服务商任务，也不解析服务商响应；这些职责由
 OpenReel 调用 Universal Model Adapter 完成。
 

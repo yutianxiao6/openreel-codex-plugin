@@ -39,9 +39,17 @@ async function startFakeOpenReel() {
         ready: true,
         contract_version: "test.contract.v1",
         node_type: "video",
-        normalized_fields: { prompt: body?.fields?.prompt ?? "video prompt", video_mode: "text_to_video" },
+        normalized_fields: {
+          prompt: body?.fields?.prompt ?? "video prompt",
+          video_mode: "text_to_video",
+          generate_audio: body?.fields?.generate_audio ?? true,
+        },
         provider: { api_format: "universal_adapter", protocol_id: "test.video-task" },
-        capabilities: { supported_modes: ["text_to_video", "first_frame"] },
+        capabilities: {
+          supported_modes: ["text_to_video", "first_frame"],
+          supports_native_audio: true,
+          default_generate_audio: true,
+        },
         errors: [],
       }));
       return;
@@ -241,6 +249,11 @@ test("video tools use the 20-minute OpenReel wait contract without an old protoc
     assert.equal(wait.inputSchema.properties.timeout_seconds.default, 1200);
     assert.equal(wait.inputSchema.properties.poll_interval_seconds, undefined);
     assert.ok(contract);
+    assert.equal(
+      tools.find((item) => item.name === "openreel_create_nodes")
+        .inputSchema.properties.fields.properties.generate_audio.type,
+      "boolean",
+    );
     assert.match(
       tools.find((item) => item.name === "openreel_create_nodes").description,
       /Preflight and create/,
@@ -366,6 +379,8 @@ test("node creation returns a compact persisted identity", async () => {
     assert.equal(result.ok, true);
     assert.equal(result.id, "node-created");
     assert.equal(result.status, "idle");
+    const createCall = fake.toolCalls.find((item) => item.tool === "node.create");
+    assert.equal(createCall.args.fields.generate_audio, true);
     const serialized = JSON.stringify(response.result);
     assert.equal(serialized.includes("giant-prompt"), false);
     assert.ok(serialized.length < 2_000, `compact create result was ${serialized.length} characters`);
@@ -394,6 +409,8 @@ test("the direct node contract omits echoed prompt text", async () => {
     assert.equal(result.ready, true);
     assert.deepEqual(result.omitted_input_fields, ["prompt"]);
     assert.deepEqual(result.capabilities.supported_modes, ["text_to_video", "first_frame"]);
+    assert.equal(result.capabilities.supports_native_audio, true);
+    assert.equal(result.capabilities.default_generate_audio, true);
     const serialized = JSON.stringify(response.result);
     assert.equal(serialized.includes("giant-prompt"), false);
     assert.ok(serialized.length < 3_000, `compact contract result was ${serialized.length} characters`);
