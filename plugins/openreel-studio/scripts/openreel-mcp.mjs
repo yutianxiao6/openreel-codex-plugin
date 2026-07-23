@@ -116,7 +116,7 @@ const TOOLS = [
     name: "openreel_select_project",
     title: "Select OpenReel Project",
     description:
-      "Select the OpenReel project used by later project-scoped tools in this Codex session. Use an id when exact titles are duplicated.",
+      "Select the OpenReel project used by later tools and switch every already-open OpenReel project page to it. Use an id when exact titles are duplicated.",
     inputSchema: objectSchema({
       project_id: stringField("Exact OpenReel project UUID."),
       title: stringField("Exact project title when it uniquely identifies one project."),
@@ -1857,6 +1857,23 @@ function bindProject(project) {
   return selectedProjectSummary();
 }
 
+async function activateProjectInOpenUi(project, sourceProjectId = null) {
+  const projectId = requireString(project?.id, "project.id");
+  const query = new URLSearchParams();
+  if (sourceProjectId) query.set("source_project_id", sourceProjectId);
+  const suffix = query.size ? `?${query}` : "";
+  const response = await requestOpenReel(
+    `/api/projects/${encodeSegment(projectId, "project_id")}/activate-ui${suffix}`,
+    { method: "POST" },
+  );
+  return {
+    project: response?.project && typeof response.project === "object" ? response.project : project,
+    ui_activation: response?.ui_activation && typeof response.ui_activation === "object"
+      ? response.ui_activation
+      : { requested: true, refresh_page: true },
+  };
+}
+
 function resolveSelectedProjectId(requestedProjectId) {
   const requested = typeof requestedProjectId === "string" && requestedProjectId.trim()
     ? requestedProjectId.trim()
@@ -1897,13 +1914,15 @@ async function selectProject(args) {
   }
 
   const previous = selectedProjectSummary();
-  const selected = bindProject(project);
+  const activated = await activateProjectInOpenUi(project, previous?.id ?? null);
+  const selected = bindProject(activated.project);
   return {
     ok: true,
     changed: previous?.id !== selected.id,
     previous_project: previous,
     selected_project: selected,
-    project: sessionProject(project),
+    project: sessionProject(activated.project),
+    ui_activation: activated.ui_activation,
   };
 }
 
@@ -1986,19 +2005,14 @@ const HANDLERS = {
   async openreel_create_project(args) {
     const body = { title: requireString(args.title, "title") };
     const previousProject = selectedProjectSummary();
-    const query = new URLSearchParams({ activate_ui: "true" });
-    if (previousProject?.id) query.set("source_project_id", previousProject.id);
-    const project = await requestOpenReel(`/api/projects?${query}`, { method: "POST", json: body });
-    bindProject(project);
+    const project = await requestOpenReel("/api/projects", { method: "POST", json: body });
+    const activated = await activateProjectInOpenUi(project, previousProject?.id ?? null);
+    bindProject(activated.project);
     return {
-      id: project.id,
-      title: project.title,
+      id: activated.project.id,
+      title: activated.project.title,
       _codex_selected: true,
-      ui_activation: {
-        requested: true,
-        reload_page: true,
-        notified_project_id: previousProject?.id ?? project.id,
-      },
+      ui_activation: activated.ui_activation,
     };
   },
 

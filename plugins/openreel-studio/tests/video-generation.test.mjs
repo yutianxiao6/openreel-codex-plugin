@@ -14,6 +14,7 @@ async function startFakeOpenReel() {
   const nodeReads = [];
   const waitRequests = [];
   const projectCreateRequests = [];
+  const projectActivationRequests = [];
   const contractRequests = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
@@ -29,9 +30,25 @@ async function startFakeOpenReel() {
       response.end(JSON.stringify({ id: "project-old", title: "Old project" }));
       return;
     }
-    if (request.method === "POST" && request.url?.startsWith("/api/projects?")) {
+    if (request.method === "POST" && request.url === "/api/projects") {
       projectCreateRequests.push({ url: request.url, body });
       response.end(JSON.stringify({ id: "project-new", title: body?.title }));
+      return;
+    }
+    if (request.method === "POST" && request.url?.startsWith("/api/projects/") && request.url.includes("/activate-ui")) {
+      projectActivationRequests.push({ url: request.url, body });
+      const project = request.url.includes("project-new")
+        ? { id: "project-new", title: "New project" }
+        : { id: "project-old", title: "Old project" };
+      response.end(JSON.stringify({
+        ok: true,
+        project,
+        ui_activation: {
+          requested: true,
+          refresh_page: true,
+          subscribers_notified: 2,
+        },
+      }));
       return;
     }
     if (request.url === "/api/tools/node-contract") {
@@ -158,6 +175,7 @@ async function startFakeOpenReel() {
     nodeReads,
     waitRequests,
     projectCreateRequests,
+    projectActivationRequests,
     contractRequests,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
@@ -206,7 +224,34 @@ function startBridge(baseUrl) {
   };
 }
 
-test("project creation selects the new project and requests an OpenReel page reload", async () => {
+test("project selection activates the target in already-open OpenReel pages", async () => {
+  const fake = await startFakeOpenReel();
+  const bridge = startBridge(fake.baseUrl);
+  try {
+    await bridge.call("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+    const response = await bridge.call("tools/call", {
+      name: "openreel_select_project",
+      arguments: { project_id: "project-old" },
+    });
+    const result = response.result.structuredContent;
+
+    assert.equal(result.selected_project.id, "project-old");
+    assert.deepEqual(result.ui_activation, {
+      requested: true,
+      refresh_page: true,
+      subscribers_notified: 2,
+    });
+    assert.deepEqual(fake.projectActivationRequests, [{
+      url: "/api/projects/project-old/activate-ui",
+      body: null,
+    }]);
+  } finally {
+    await bridge.close();
+    await fake.close();
+  }
+});
+
+test("project creation selects and activates the new project in the OpenReel UI", async () => {
   const fake = await startFakeOpenReel();
   const bridge = startBridge(fake.baseUrl);
   try {
@@ -215,6 +260,7 @@ test("project creation selects the new project and requests an OpenReel page rel
       name: "openreel_select_project",
       arguments: { project_id: "project-old" },
     });
+    fake.projectActivationRequests.length = 0;
     const response = await bridge.call("tools/call", {
       name: "openreel_create_project",
       arguments: { title: "New project" },
@@ -225,12 +271,16 @@ test("project creation selects the new project and requests an OpenReel page rel
     assert.equal(result._codex_selected, true);
     assert.deepEqual(result.ui_activation, {
       requested: true,
-      reload_page: true,
-      notified_project_id: "project-old",
+      refresh_page: true,
+      subscribers_notified: 2,
     });
     assert.deepEqual(fake.projectCreateRequests, [{
-      url: "/api/projects?activate_ui=true&source_project_id=project-old",
+      url: "/api/projects",
       body: { title: "New project" },
+    }]);
+    assert.deepEqual(fake.projectActivationRequests, [{
+      url: "/api/projects/project-new/activate-ui?source_project_id=project-old",
+      body: null,
     }]);
   } finally {
     await bridge.close();
